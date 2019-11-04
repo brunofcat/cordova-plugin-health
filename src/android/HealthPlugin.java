@@ -1,1826 +1,1734 @@
-#import "HealthKit.h"
-#import "HKHealthStore+AAPLExtensions.h"
-#import "WorkoutActivityConversion.h"
+package org.apache.cordova.health;
 
-#pragma clang diagnostic push
-#pragma ide diagnostic ignored "OCNotLocalizedStringInspection"
-#define HKPLUGIN_DEBUG
+import android.Manifest;
+import android.app.Activity;
+import android.content.Intent;
+import android.content.IntentSender;
+import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.os.Bundle;
+import android.support.annotation.NonNull;
+import android.util.Log;
 
-#pragma mark Property Type Constants
-static NSString *const HKPluginError = @"HKPluginError";
-static NSString *const HKPluginKeyReadTypes = @"readTypes";
-static NSString *const HKPluginKeyWriteTypes = @"writeTypes";
-static NSString *const HKPluginKeyType = @"type";
-static NSString *const HKPluginKeyStartDate = @"startDate";
-static NSString *const HKPluginKeyEndDate = @"endDate";
-static NSString *const HKPluginKeySampleType = @"sampleType";
-static NSString *const HKPluginKeyAggregation = @"aggregation";
-static NSString *const HKPluginKeyUnit = @"unit";
-static NSString *const HKPluginKeyUnits = @"units";
-static NSString *const HKPluginKeyAmount = @"amount";
-static NSString *const HKPluginKeyValue = @"value";
-static NSString *const HKPluginKeyCorrelationType = @"correlationType";
-static NSString *const HKPluginKeyObjects = @"samples";
-static NSString *const HKPluginKeySourceName = @"sourceName";
-static NSString *const HKPluginKeySourceBundleId = @"sourceBundleId";
-static NSString *const HKPluginKeyMetadata = @"metadata";
-static NSString *const HKPluginKeyUUID = @"UUID";
+import com.google.android.gms.common.ConnectionResult;
+import com.google.android.gms.common.GoogleApiAvailability;
+import com.google.android.gms.common.Scopes;
+import com.google.android.gms.common.api.GoogleApiClient;
+import com.google.android.gms.common.api.PendingResult;
+import com.google.android.gms.common.api.ResultCallback;
+import com.google.android.gms.common.api.Scope;
+import com.google.android.gms.common.api.Status;
+import com.google.android.gms.fitness.Fitness;
+import com.google.android.gms.fitness.data.Bucket;
+import com.google.android.gms.fitness.data.DataPoint;
+import com.google.android.gms.fitness.data.DataSet;
+import com.google.android.gms.fitness.data.DataSource;
+import com.google.android.gms.fitness.data.DataType;
+import com.google.android.gms.fitness.data.Field;
+import com.google.android.gms.fitness.data.HealthDataTypes;
+import com.google.android.gms.fitness.data.HealthFields;
+import com.google.android.gms.fitness.data.Value;
+import com.google.android.gms.fitness.request.DataDeleteRequest;
+import com.google.android.gms.fitness.request.DataReadRequest;
+import com.google.android.gms.fitness.request.DataTypeCreateRequest;
+import com.google.android.gms.fitness.result.DataReadResult;
+import com.google.android.gms.fitness.result.DataTypeResult;
 
-#pragma mark Categories
+import org.apache.cordova.CallbackContext;
+import org.apache.cordova.CordovaInterface;
+import org.apache.cordova.CordovaPlugin;
+import org.apache.cordova.CordovaWebView;
+import org.apache.cordova.PluginResult;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
-// NSDictionary check if there is a value for a required key and populate an error if not present
-@interface NSDictionary (RequiredKey)
-- (BOOL)hasAllRequiredKeys:(NSArray<NSString *> *)keys error:(NSError **)error;
-@end
-
-// Public Interface extension category
-@interface HealthKit ()
-+ (HKHealthStore *)sharedHealthStore;
-@end
-
-// Internal interface
-@interface HealthKit (Internal)
-- (void)checkAuthStatusWithCallbackId:(NSString *)callbackId
-                              forType:(HKObjectType *)type
-                        andCompletion:(void (^)(CDVPluginResult *result, NSString *innerCallbackId))completion;
-@end
-
-
-// Internal interface helper methods
-@interface HealthKit (InternalHelpers)
-+ (NSString *)stringFromDate:(NSDate *)date;
-
-+ (HKUnit *)getUnit:(NSString *)type expected:(NSString *)expected;
-
-+ (HKObjectType *)getHKObjectType:(NSString *)elem;
-
-+ (HKQuantityType *)getHKQuantityType:(NSString *)elem;
-
-+ (HKSampleType *)getHKSampleType:(NSString *)elem;
-
-- (HKQuantitySample *)loadHKSampleFromInputDictionary:(NSDictionary *)inputDictionary error:(NSError **)error;
-
-- (HKCorrelation *)loadHKCorrelationFromInputDictionary:(NSDictionary *)inputDictionary error:(NSError **)error;
-
-+ (HKQuantitySample *)getHKQuantitySampleWithStartDate:(NSDate *)startDate endDate:(NSDate *)endDate sampleTypeString:(NSString *)sampleTypeString unitTypeString:(NSString *)unitTypeString value:(double)value metadata:(NSDictionary *)metadata error:(NSError **)error;
-
-- (HKCorrelation *)getHKCorrelationWithStartDate:(NSDate *)startDate endDate:(NSDate *)endDate correlationTypeString:(NSString *)correlationTypeString objects:(NSSet *)objects metadata:(NSDictionary *)metadata error:(NSError **)error;
-
-+ (void)triggerErrorCallbackWithMessage: (NSString *) message command: (CDVInvokedUrlCommand *) command delegate: (id<CDVCommandDelegate>) delegate;
-@end
+import java.util.Calendar;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
- * Implementation of internal interface
- * **************************************************************************************
+ * Health plugin Android code.
+ * MIT licensed.
  */
-#pragma mark Internal Interface
+public class HealthPlugin extends CordovaPlugin {
+    // logger tag
+    private static final String TAG = "cordova-plugin-health";
 
-@implementation HealthKit (Internal)
+    // calling activity
+    private CordovaInterface cordova;
 
-/**
- * Check the authorization status for a HealthKit type and dispatch the callback with result
- *
- * @param callbackId    *NSString
- * @param type          *HKObjectType
- * @param completion    void(^)
- */
-- (void)checkAuthStatusWithCallbackId:(NSString *)callbackId forType:(HKObjectType *)type andCompletion:(void (^)(CDVPluginResult *, NSString *))completion {
+    // actual Google API client
+    private GoogleApiClient mClient;
 
-    CDVPluginResult *pluginResult = nil;
+    // instance of the call back when requesting or checking authorisation
+    private CallbackContext authReqCallbackCtx;
 
-    if (type == nil) {
-        pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"type is an invalid value"];
-    } else {
-        HKAuthorizationStatus status = [[HealthKit sharedHealthStore] authorizationStatusForType:type];
+    // if true, when checking authorisation, tries to get it from user
+    private boolean authAutoresolve = false;
 
-        NSString *authorizationResult = nil;
-        switch (status) {
-            case HKAuthorizationStatusSharingAuthorized:
-                authorizationResult = @"authorized";
-                break;
-            case HKAuthorizationStatusSharingDenied:
-                authorizationResult = @"denied";
-                break;
-            default:
-                authorizationResult = @"undetermined";
-        }
+    // list of OS level dynamic permissions needed (if any)
+    private static final LinkedList<String> dynPerms = new LinkedList<String>();
 
-#ifdef HKPLUGIN_DEBUG
-        NSLog(@"Health store returned authorization status: %@ for type %@", authorizationResult, [type description]);
-#endif
+    private static final int REQUEST_OAUTH = 1;
+    private static final int REQUEST_DYN_PERMS = 2;
+    private static final int READ_PERMS = 1;
+    private static final int READ_WRITE_PERMS = 2;
 
-        pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:authorizationResult];
+    // Scope for read/write access to activity-related data types in Google Fit.
+    // These include activity type, calories consumed and expended, step counts, and others.
+    public static Map<String, DataType> activitydatatypes = new HashMap<String, DataType>();
+
+    static {
+        activitydatatypes.put("steps", DataType.TYPE_STEP_COUNT_DELTA);
+        activitydatatypes.put("calories", DataType.TYPE_CALORIES_EXPENDED);
+        activitydatatypes.put("calories.basal", DataType.TYPE_BASAL_METABOLIC_RATE);
+        activitydatatypes.put("activity", DataType.TYPE_ACTIVITY_SEGMENT);
     }
 
-    completion(pluginResult, callbackId);
-}
+    // Scope for read/write access to biometric data types in Google Fit. These include heart rate, height, and weight.
+    public static Map<String, DataType> bodydatatypes = new HashMap<String, DataType>();
 
-@end
+    static {
+        bodydatatypes.put("height", DataType.TYPE_HEIGHT);
+        bodydatatypes.put("weight", DataType.TYPE_WEIGHT);
+        bodydatatypes.put("heart_rate", DataType.TYPE_HEART_RATE_BPM);
+        bodydatatypes.put("fat_percentage", DataType.TYPE_BODY_FAT_PERCENTAGE);
+    }
 
-/**
- * Implementation of internal helpers interface
- * **************************************************************************************
- */
-#pragma mark Internal Helpers
+    // Scope for read/write access to location-related data types in Google Fit. These include location, distance, and speed.
+    public static Map<String, DataType> locationdatatypes = new HashMap<String, DataType>();
 
-@implementation HealthKit (InternalHelpers)
+    static {
+        locationdatatypes.put("distance", DataType.TYPE_DISTANCE_DELTA);
+    }
 
-/**
- * Get a string representation of an NSDate object
- *
- * @param date  *NSDate
- * @return      *NSString
- */
-+ (NSString *)stringFromDate:(NSDate *)date {
-    __strong static NSDateFormatter *formatter = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        formatter = [[NSDateFormatter alloc] init];
-        [formatter setLocale:[NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"]];
-        [formatter setDateFormat:@"yyyy-MM-dd'T'HH:mm:ssZZZZZ"];
-    });
+    // Helper class used for storing nutrients information (name and unit of measurement)
+    private static class NutrientFieldInfo {
+        public String field;
+        public String unit;
 
-    return [formatter stringFromDate:date];
-}
-
-/**
- * Get a HealthKit unit and make sure its local representation matches what is expected
- *
- * @param type      *NSString
- * @param expected  *NSString
- * @return          *HKUnit
- */
-+ (HKUnit *)getUnit:(NSString *)type expected:(NSString *)expected {
-    HKUnit *localUnit;
-    @try {
-        // this throws an exception instead of returning nil if type is unknown
-        localUnit = [HKUnit unitFromString:type];
-        if ([[[localUnit class] description] isEqualToString:expected]) {
-            return localUnit;
-        } else {
-            return nil;
+        public NutrientFieldInfo(String field, String unit) {
+            this.field = field;
+            this.unit = unit;
         }
     }
-    @catch (NSException *e) {
-        return nil;
-    }
-}
 
-/**
- * Get a HealthKit object type by name
- *
- * @param elem  *NSString
- * @return      *HKObjectType
- */
-+ (HKObjectType *)getHKObjectType:(NSString *)elem {
+    // Lookup for nutrition fields and units
+    public static Map<String, NutrientFieldInfo> nutrientFields = new HashMap<String, NutrientFieldInfo>();
 
-    HKObjectType *type = nil;
-
-    type = [HKObjectType quantityTypeForIdentifier:elem];
-    if (type != nil) {
-        return type;
-    }
-
-    type = [HKObjectType characteristicTypeForIdentifier:elem];
-    if (type != nil) {
-        return type;
-    }
-
-    // @TODO | The fall through here is inefficient.
-    // @TODO | It needs to be refactored so the same HK method isnt called twice
-    return [HealthKit getHKSampleType:elem];
-}
-
-/**
- * Get a HealthKit quantity type by name
- *
- * @param elem  *NSString
- * @return      *HKQuantityType
- */
-+ (HKQuantityType *)getHKQuantityType:(NSString *)elem {
-    return [HKQuantityType quantityTypeForIdentifier:elem];
-}
-
-/**
- * Get sample type by name
- *
- * @param elem  *NSString
- * @return      *HKSampleType
- */
-+ (HKSampleType *)getHKSampleType:(NSString *)elem {
-
-    HKSampleType *type = nil;
-
-    type = [HKObjectType quantityTypeForIdentifier:elem];
-    if (type != nil) {
-        return type;
+    static {
+        nutrientFields.put("nutrition.calories", new NutrientFieldInfo(Field.NUTRIENT_CALORIES, "kcal"));
+        nutrientFields.put("nutrition.fat.total", new NutrientFieldInfo(Field.NUTRIENT_TOTAL_FAT, "g"));
+        nutrientFields.put("nutrition.fat.saturated", new NutrientFieldInfo(Field.NUTRIENT_SATURATED_FAT, "g"));
+        nutrientFields.put("nutrition.fat.unsaturated", new NutrientFieldInfo(Field.NUTRIENT_UNSATURATED_FAT, "g"));
+        nutrientFields.put("nutrition.fat.polyunsaturated", new NutrientFieldInfo(Field.NUTRIENT_POLYUNSATURATED_FAT, "g"));
+        nutrientFields.put("nutrition.fat.monounsaturated", new NutrientFieldInfo(Field.NUTRIENT_MONOUNSATURATED_FAT, "g"));
+        nutrientFields.put("nutrition.fat.trans", new NutrientFieldInfo(Field.NUTRIENT_TRANS_FAT, "g"));
+        nutrientFields.put("nutrition.cholesterol", new NutrientFieldInfo(Field.NUTRIENT_CHOLESTEROL, "mg"));
+        nutrientFields.put("nutrition.sodium", new NutrientFieldInfo(Field.NUTRIENT_SODIUM, "mg"));
+        nutrientFields.put("nutrition.potassium", new NutrientFieldInfo(Field.NUTRIENT_POTASSIUM, "mg"));
+        nutrientFields.put("nutrition.carbs.total", new NutrientFieldInfo(Field.NUTRIENT_TOTAL_CARBS, "g"));
+        nutrientFields.put("nutrition.dietary_fiber", new NutrientFieldInfo(Field.NUTRIENT_DIETARY_FIBER, "g"));
+        nutrientFields.put("nutrition.sugar", new NutrientFieldInfo(Field.NUTRIENT_SUGAR, "g"));
+        nutrientFields.put("nutrition.protein", new NutrientFieldInfo(Field.NUTRIENT_PROTEIN, "g"));
+        nutrientFields.put("nutrition.vitamin_a", new NutrientFieldInfo(Field.NUTRIENT_VITAMIN_A, "IU"));
+        nutrientFields.put("nutrition.vitamin_c", new NutrientFieldInfo(Field.NUTRIENT_VITAMIN_C, "mg"));
+        nutrientFields.put("nutrition.calcium", new NutrientFieldInfo(Field.NUTRIENT_CALCIUM, "mg"));
+        nutrientFields.put("nutrition.iron", new NutrientFieldInfo(Field.NUTRIENT_IRON, "mg"));
     }
 
-    type = [HKObjectType categoryTypeForIdentifier:elem];
-    if (type != nil) {
-        return type;
-    }
+    // Scope for read/write access to nutrition data types in Google Fit.
+    public static Map<String, DataType> nutritiondatatypes = new HashMap<String, DataType>();
 
-    type = [HKObjectType correlationTypeForIdentifier:elem];
-    if (type != nil) {
-        return type;
-    }
-
-    if ([elem isEqualToString:@"workoutType"]) {
-        return [HKObjectType workoutType];
-    }
-
-    // leave this here for if/when apple adds other sample types
-    return type;
-
-}
-
-/**
- * Parse out a sample from a dictionary and perform error checking
- *
- * @param inputDictionary   *NSDictionary
- * @param error             **NSError
- * @return                  *HKQuantitySample
- */
-- (HKSample *)loadHKSampleFromInputDictionary:(NSDictionary *)inputDictionary error:(NSError **)error {
-    //Load quantity sample from args to command
-
-    if (![inputDictionary hasAllRequiredKeys:@[HKPluginKeyStartDate, HKPluginKeyEndDate, HKPluginKeySampleType] error:error]) {
-        return nil;
-    }
-
-    NSDate *startDate = [NSDate dateWithTimeIntervalSince1970:[inputDictionary[HKPluginKeyStartDate] longValue]];
-    NSDate *endDate = [NSDate dateWithTimeIntervalSince1970:[inputDictionary[HKPluginKeyEndDate] longValue]];
-    NSString *sampleTypeString = inputDictionary[HKPluginKeySampleType];
-
-    //Load optional metadata key
-    NSDictionary *metadata = inputDictionary[HKPluginKeyMetadata];
-    if (metadata == nil) {
-      metadata = @{};
-    }
-
-    if ([inputDictionary objectForKey:HKPluginKeyUnit]) {
-        if (![inputDictionary hasAllRequiredKeys:@[HKPluginKeyUnit] error:error]) return nil;
-        NSString *unitString = [inputDictionary objectForKey:HKPluginKeyUnit];
-
-            return [HealthKit getHKQuantitySampleWithStartDate:startDate
-                                                   endDate:endDate
-                                          sampleTypeString:sampleTypeString
-                                            unitTypeString:unitString
-                                                     value:[inputDictionary[HKPluginKeyAmount] doubleValue]
-                                                  metadata:metadata error:error];
-    } else {
-            if (![inputDictionary hasAllRequiredKeys:@[HKPluginKeyValue] error:error]) return nil;
-            NSString *categoryString = [inputDictionary objectForKey:HKPluginKeyValue];
-
-            return [self getHKCategorySampleWithStartDate:startDate
-                                                       endDate:endDate
-                                              sampleTypeString:sampleTypeString
-                                                categoryString:categoryString
-                                                      metadata:metadata
-                                                         error:error];
+    static {
+        nutritiondatatypes.put("nutrition", DataType.TYPE_NUTRITION);
+        nutritiondatatypes.put("nutrition.water", DataType.TYPE_HYDRATION);
+        for (String dataType : nutrientFields.keySet()) {
+            nutritiondatatypes.put(dataType, DataType.TYPE_NUTRITION);
         }
-  }
-
-/**
- * Parse out a correlation from a dictionary and perform error checking
- *
- * @param inputDictionary   *NSDictionary
- * @param error             **NSError
- * @return                  *HKCorrelation
- */
-- (HKCorrelation *)loadHKCorrelationFromInputDictionary:(NSDictionary *)inputDictionary error:(NSError **)error {
-    //Load correlation from args to command
-
-    if (![inputDictionary hasAllRequiredKeys:@[HKPluginKeyStartDate, HKPluginKeyEndDate, HKPluginKeyCorrelationType, HKPluginKeyObjects] error:error]) {
-        return nil;
     }
 
-    NSDate *startDate = [NSDate dateWithTimeIntervalSince1970:[inputDictionary[HKPluginKeyStartDate] longValue]];
-    NSDate *endDate = [NSDate dateWithTimeIntervalSince1970:[inputDictionary[HKPluginKeyEndDate] longValue]];
-    NSString *correlationTypeString = inputDictionary[HKPluginKeyCorrelationType];
-    NSArray *objectDictionaries = inputDictionary[HKPluginKeyObjects];
+    public static Map<String, DataType> customdatatypes = new HashMap<String, DataType>();
 
-    NSMutableSet *objects = [NSMutableSet set];
-    for (NSDictionary *objectDictionary in objectDictionaries) {
-        HKSample *sample = [self loadHKSampleFromInputDictionary:objectDictionary error:error];
-        if (sample == nil) {
-            return nil;
-        }
-        [objects addObject:sample];
+    public static Map<String, DataType> healthdatatypes = new HashMap<String, DataType>();
+
+    static {
+        healthdatatypes.put("blood_glucose", HealthDataTypes.TYPE_BLOOD_GLUCOSE);
+        healthdatatypes.put("blood_pressure", HealthDataTypes.TYPE_BLOOD_PRESSURE);
     }
 
-    NSDictionary *metadata = inputDictionary[HKPluginKeyMetadata];
-    if (metadata == nil) {
-        metadata = @{};
-    }
-    return [self getHKCorrelationWithStartDate:startDate
-                                       endDate:endDate
-                         correlationTypeString:correlationTypeString
-                                       objects:objects
-                                      metadata:metadata
-                                         error:error];
-}
-
-/**
- * Query HealthKit to get a quantity sample in a specified date range
- *
- * @param startDate         *NSDate
- * @param endDate           *NSDate
- * @param sampleTypeString  *NSString
- * @param unitTypeString    *NSString
- * @param value             double
- * @param metadata          *NSDictionary
- * @param error             **NSError
- * @return                  *HKQuantitySample
- */
-+ (HKQuantitySample *)getHKQuantitySampleWithStartDate:(NSDate *)startDate
-                                               endDate:(NSDate *)endDate
-                                      sampleTypeString:(NSString *)sampleTypeString
-                                        unitTypeString:(NSString *)unitTypeString
-                                                 value:(double)value
-                                              metadata:(NSDictionary *)metadata
-                                                 error:(NSError **)error {
-    HKQuantityType *type = [HealthKit getHKQuantityType:sampleTypeString];
-    if (type == nil) {
-        if (error != nil) {
-            *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey: @"quantity type string was invalid"}];
-        }
-
-        return nil;
+    public HealthPlugin() {
     }
 
-    HKUnit *unit = nil;
-    @try {
-        if (unitTypeString != nil) {
-            if ([unitTypeString isEqualToString:@"mmol/L"]) {
-                // @see https://stackoverflow.com/a/30196642/1214598
-                unit = [[HKUnit moleUnitWithMetricPrefix:HKMetricPrefixMilli molarMass:HKUnitMolarMassBloodGlucose] unitDividedByUnit:[HKUnit literUnit]];
-            } else {
-                // issue 51
-                // @see https://github.com/Telerik-Verified-Plugins/HealthKit/issues/51
-                if ([unitTypeString isEqualToString:@"percent"]) {
-                    unitTypeString = @"%";
+    // general initalisation
+    @Override
+    public void initialize(CordovaInterface cordova, CordovaWebView webView) {
+        super.initialize(cordova, webView);
+        this.cordova = cordova;
+    }
+
+    // called once authorisation is completed
+    // creates custom data types
+    private void authReqSuccess() {
+        //Create custom data types
+        cordova.getThreadPool().execute(new Runnable() {
+
+            @Override
+            public void run() {
+                try {
+                    String packageName = cordova.getActivity().getApplicationContext().getPackageName();
+                    DataTypeCreateRequest request = new DataTypeCreateRequest.Builder()
+                            .setName(packageName + ".gender")
+                            .addField("gender", Field.FORMAT_STRING)
+                            .build();
+                    PendingResult<DataTypeResult> pendingResult = Fitness.ConfigApi.createCustomDataType(mClient, request);
+                    DataTypeResult dataTypeResult = pendingResult.await();
+                    if (!dataTypeResult.getStatus().isSuccess()) {
+                        authReqCallbackCtx.error(dataTypeResult.getStatus().getStatusMessage());
+                        return;
+                    }
+                    customdatatypes.put("gender", dataTypeResult.getDataType());
+
+                    request = new DataTypeCreateRequest.Builder()
+                            .setName(packageName + ".date_of_birth")
+                            .addField("day", Field.FORMAT_INT32)
+                            .addField("month", Field.FORMAT_INT32)
+                            .addField("year", Field.FORMAT_INT32)
+                            .build();
+                    pendingResult = Fitness.ConfigApi.createCustomDataType(mClient, request);
+                    dataTypeResult = pendingResult.await();
+                    if (!dataTypeResult.getStatus().isSuccess()) {
+                        authReqCallbackCtx.error(dataTypeResult.getStatus().getStatusMessage());
+                        return;
+                    }
+                    customdatatypes.put("date_of_birth", dataTypeResult.getDataType());
+
+                    Log.i(TAG, "All custom data types created");
+                    requestDynamicPermissions();
+                } catch (Exception ex) {
+                    authReqCallbackCtx.error(ex.getMessage());
                 }
-                unit = [HKUnit unitFromString:unitTypeString];
             }
+        });
+    }
+
+    // called once custom data types have been created
+    // asks for dynamic permissions on Android 6 and more
+    private void requestDynamicPermissions() {
+        if (dynPerms.isEmpty()) {
+            // nothing to be done
+            authReqCallbackCtx.sendPluginResult(new PluginResult(PluginResult.Status.OK, true));
         } else {
-            if (error != nil) {
-                *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey: @"unit is invalid"}];
+            LinkedList<String> perms = new LinkedList<String>();
+            for (String p : dynPerms) {
+                if (!cordova.hasPermission(p)) {
+                    perms.add(p);
+                }
             }
-            return nil;
-        }
-    } @catch (NSException *e) {
-        if (error != nil) {
-            *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey: @"unit is invalid"}];
-        }
-        return nil;
-    }
-
-    HKQuantity *quantity = [HKQuantity quantityWithUnit:unit doubleValue:value];
-    if (![quantity isCompatibleWithUnit:unit]) {
-        if (error != nil) {
-            *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey: @"unit is not compatible with quantity"}];
-        }
-
-        return nil;
-    }
-
-    return [HKQuantitySample quantitySampleWithType:type quantity:quantity startDate:startDate endDate:endDate metadata:metadata];
-}
-
-// Helper to handle the functionality with HealthKit to get a category sample
-- (HKCategorySample*) getHKCategorySampleWithStartDate:(NSDate*) startDate endDate:(NSDate*) endDate sampleTypeString:(NSString*) sampleTypeString categoryString:(NSString*) categoryString metadata:(NSDictionary*) metadata error:(NSError**) error {
-    HKCategoryType *type = [HKCategoryType categoryTypeForIdentifier:sampleTypeString];
-    if (type==nil) {
-      *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey:@"quantity type string is invalid"}];
-      return nil;
-    }
-    NSNumber* value = [self getCategoryValueByName:categoryString type:type];
-    if (value == nil && ![type.identifier isEqualToString:@"HKCategoryTypeIdentifierMindfulSession"]) {
-        *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"%@,%@,%@",@"category value is not compatible with category",type.identifier,categoryString]}];
-        return nil;
-    }
-
-    return [HKCategorySample categorySampleWithType:type value:[value integerValue] startDate:startDate endDate:endDate];
-}
-
-- (NSNumber*) getCategoryValueByName:(NSString *) categoryValue type:(HKCategoryType*) type {
-    NSDictionary * map = @{
-      @"HKCategoryTypeIdentifierSleepAnalysis":@{
-        @"HKCategoryValueSleepAnalysisInBed":@(HKCategoryValueSleepAnalysisInBed),
-        @"HKCategoryValueSleepAnalysisAsleep":@(HKCategoryValueSleepAnalysisAsleep),
-        @"HKCategoryValueSleepAnalysisAwake":@(HKCategoryValueSleepAnalysisAwake)
-      }
-    };
-
-    NSDictionary * valueMap = map[type.identifier];
-    if (!valueMap) {
-      return HKCategoryValueNotApplicable;
-    }
-    return valueMap[categoryValue];
-}
-
-/**
- * Query HealthKit to get correlation data within a specified date range
- *
- * @param startDate
- * @param endDate
- * @param correlationTypeString
- * @param objects
- * @param metadata
- * @param error
- * @return
- */
-- (HKCorrelation *)getHKCorrelationWithStartDate:(NSDate *)startDate
-                                         endDate:(NSDate *)endDate
-                           correlationTypeString:(NSString *)correlationTypeString
-                                         objects:(NSSet *)objects
-                                        metadata:(NSDictionary *)metadata
-                                           error:(NSError **)error {
-#ifdef HKPLUGIN_DEBUG
-    NSLog(@"correlation type is %@", correlationTypeString);
-#endif
-
-    HKCorrelationType *correlationType = [HKCorrelationType correlationTypeForIdentifier:correlationTypeString];
-    if (correlationType == nil) {
-        if (error != nil) {
-            *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey: @"correlation type string is invalid"}];
-        }
-
-        return nil;
-    }
-
-    return [HKCorrelation correlationWithType:correlationType startDate:startDate endDate:endDate objects:objects metadata:metadata];
-}
-
-/**
- * Trigger a generic error callback
- *
- * @param message   *NSString
- * @param command   *CDVInvokedUrlCommand
- * @param delegate  id<CDVCommandDelegate>
- */
-+ (void)triggerErrorCallbackWithMessage: (NSString *) message command: (CDVInvokedUrlCommand *) command delegate: (id<CDVCommandDelegate>) delegate {
-    @autoreleasepool {
-        CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:message];
-        [delegate sendPluginResult:result callbackId:command.callbackId];
-    }
-}
-
-@end
-
-/**
- * Implementation of NSDictionary (RequiredKey)
- */
-#pragma mark NSDictionary (RequiredKey)
-
-@implementation NSDictionary (RequiredKey)
-
-/**
- *
- * @param keys  *NSArray
- * @param error **NSError
- * @return      BOOL
- */
-- (BOOL)hasAllRequiredKeys:(NSArray<NSString *> *)keys error:(NSError **)error {
-    NSMutableArray *missing = [NSMutableArray arrayWithCapacity:0];
-
-    for (NSString *key in keys) {
-        if (self[key] == nil) {
-            [missing addObject:key];
+            if (perms.isEmpty()) {
+                // nothing to be done
+                authReqCallbackCtx.sendPluginResult(new PluginResult(PluginResult.Status.OK, true));
+            } else {
+                if (authAutoresolve) {
+                    cordova.requestPermissions(this, REQUEST_DYN_PERMS, perms.toArray(new String[perms.size()]));
+                    // the request results will be taken care of by onRequestPermissionResult()
+                } else {
+                    // if should not autoresolve, and there are dynamic permissions needed, send a fail
+                    authReqCallbackCtx.sendPluginResult(new PluginResult(PluginResult.Status.OK, false));
+                }
+            }
         }
     }
 
-    if (missing.count == 0) {
-        return YES;
-    }
-
-    if (error != nil) {
-        NSString *errMsg = [NSString stringWithFormat:@"required value(s) -%@- is missing from dictionary %@", [missing componentsJoinedByString:@", "], [self description]];
-        *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey: errMsg}];
-    }
-
-    return NO;
-}
-
-@end
-
-/**
- * Implementation of public interface
- * **************************************************************************************
- */
-#pragma mark Public Interface
-
-@implementation HealthKit
-
-/**
- * Get shared health store
- *
- * @return *HKHealthStore
- */
-+ (HKHealthStore *)sharedHealthStore {
-    __strong static HKHealthStore *store = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        store = [[HKHealthStore alloc] init];
-    });
-
-    return store;
-}
-
-/**
- * Tell delegate whether or not health data is available
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)available:(CDVInvokedUrlCommand *)command {
-    CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsBool:[HKHealthStore isHealthDataAvailable]];
-    [self.commandDelegate sendPluginResult:result callbackId:command.callbackId];
-}
-
-/**
- * Request authorization for read and/or write permissions
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)requestAuthorization:(CDVInvokedUrlCommand *)command {
-    NSMutableDictionary *args = command.arguments[0];
-
-    // read types
-    NSArray<NSString *> *readTypes = args[HKPluginKeyReadTypes];
-    NSMutableSet *readDataTypes = [[NSMutableSet alloc] init];
-
-    for (NSString *elem in readTypes) {
-#ifdef HKPLUGIN_DEBUG
-        NSLog(@"Requesting read permissions for %@", elem);
-#endif
-        HKObjectType *type = nil;
-
-        if ([elem isEqual:@"HKWorkoutTypeIdentifier"]) {
-            type = [HKObjectType workoutType];
-        } else {
-            type = [HealthKit getHKObjectType:elem];
-        }
-
-        if (type == nil) {
-            CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"readTypes contains an invalid value"];
-            [result setKeepCallbackAsBool:YES];
-            [self.commandDelegate sendPluginResult:result callbackId:command.callbackId];
-            // not returning deliberately to be future proof; other permissions are still asked
-        } else {
-            [readDataTypes addObject:type];
+    // called when the dynamic permissions are asked
+    @Override
+    public void onRequestPermissionResult(int requestCode, String[] permissions, int[] grantResults) throws JSONException {
+        if (requestCode == REQUEST_DYN_PERMS) {
+            for (int i = 0; i < grantResults.length; i++) {
+                if (grantResults[i] == PackageManager.PERMISSION_DENIED) {
+                    String errmsg = "Permission denied ";
+                    for (String perm : permissions) {
+                        errmsg += " " + perm;
+                    }
+                    authReqCallbackCtx.error("Permission denied: " + permissions[i]);
+                    return;
+                }
+            }
+            // all accepted!
+            authReqCallbackCtx.success();
         }
     }
 
-    // write types
-    //NSArray<NSString *> *writeTypes = args[HKPluginKeyWriteTypes];
-    NSArray<NSString *> *writeTypes = args[];
-    NSMutableSet *writeDataTypes = [[NSMutableSet alloc] init];
-
-    for (NSString *elem in writeTypes) {
-#ifdef HKPLUGIN_DEBUG
-        NSLog(@"Requesting write permission for %@", elem);
-#endif
-        HKObjectType *type = nil;
-
-        if ([elem isEqual:@"HKWorkoutTypeIdentifier"]) {
-            type = [HKObjectType workoutType];
-        } else {
-            type = [HealthKit getHKObjectType:elem];
-        }
-
-        if (type == nil) {
-            CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"writeTypes contains an invalid value"];
-            [result setKeepCallbackAsBool:YES];
-            [self.commandDelegate sendPluginResult:result callbackId:command.callbackId];
-            // not returning deliberately to be future proof; other permissions are still asked
-        } else {
-            [writeDataTypes addObject:type];
+    // called when access to Google API is answered
+    @Override
+    public void onActivityResult(int requestCode, int resultCode, Intent intent) {
+        if (requestCode == REQUEST_OAUTH) {
+            if (resultCode == Activity.RESULT_OK) {
+                Log.i(TAG, "Got authorisation from Google Fit");
+                if (!mClient.isConnected() && !mClient.isConnecting()) {
+                    Log.d(TAG, "Re-trying connection with Fit");
+                    mClient.connect();
+                    // the connection success / failure will be taken care of by ConnectionCallbacks in checkAuthorization()
+                }
+            } else if (resultCode == Activity.RESULT_CANCELED) {
+                // The user cancelled the login dialog before selecting any action.
+                authReqCallbackCtx.error("User cancelled the dialog");
+            } else authReqCallbackCtx.error("Authorisation failed, result code " + resultCode);
         }
     }
 
-    [[HealthKit sharedHealthStore] requestAuthorizationToShareTypes:writeDataTypes readTypes:readDataTypes completion:^(BOOL success, NSError *error) {
-        if (success) {
-            dispatch_sync(dispatch_get_main_queue(), ^{
-                CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
-                [self.commandDelegate sendPluginResult:result callbackId:command.callbackId];
+    /**
+     * The "execute" method that Cordova calls whenever the plugin is used from the JavaScript
+     *
+     * @param action          The action to execute.
+     * @param args            The exec() arguments.
+     * @param callbackContext The callback context used when calling back into JavaScript.
+     * @return
+     * @throws JSONException
+     */
+    @Override
+    public boolean execute(String action, final JSONArray args, final CallbackContext callbackContext) throws JSONException {
+
+        if ("isAvailable".equals(action)) {
+            isAvailable(callbackContext);
+            return true;
+        } else if ("promptInstallFit".equals(action)) {
+            promptInstall(callbackContext);
+            return true;
+        } else if ("requestAuthorization".equals(action)) {
+            cordova.getThreadPool().execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        checkAuthorization(args, callbackContext, true); // with autoresolve
+                    } catch (Exception ex) {
+                        callbackContext.error(ex.getMessage());
+                    }
+                }
             });
-        } else {
-            dispatch_sync(dispatch_get_main_queue(), ^{
-                CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:error.localizedDescription];
-                [self.commandDelegate sendPluginResult:result callbackId:command.callbackId];
+            return true;
+        } else if ("checkAuthorization".equals(action)) {
+            cordova.getThreadPool().execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        checkAuthorization(args, callbackContext, false); // without autoresolve
+                    } catch (Exception ex) {
+                        callbackContext.error(ex.getMessage());
+                    }
+                }
             });
-        }
-    }];
-}
-
-/**
- * Check the authorization status for a specified permission
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)checkAuthStatus:(CDVInvokedUrlCommand *)command {
-    // If status = denied, prompt user to go to settings or the Health app
-    // Note that read access is not reflected. We're not allowed to know
-    // if a user grants/denies read access, *only* write access.
-    NSMutableDictionary *args = command.arguments[0];
-    NSString *checkType = args[HKPluginKeyType];
-    HKObjectType *type;
-
-    if ([checkType isEqual:@"HKWorkoutTypeIdentifier"]) {
-        type = [HKObjectType workoutType];
-    } else {
-        type = [HealthKit getHKObjectType:checkType];
-    }
-
-    __block HealthKit *bSelf = self;
-    [self checkAuthStatusWithCallbackId:command.callbackId forType:type andCompletion:^(CDVPluginResult *result, NSString *callbackId) {
-        [bSelf.commandDelegate sendPluginResult:result callbackId:callbackId];
-    }];
-}
-
-/**
- * Save workout data
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)saveWorkout:(CDVInvokedUrlCommand *)command {
-    NSMutableDictionary *args = command.arguments[0];
-
-    NSString *activityType = args[@"activityType"];
-    NSString *quantityType = args[@"quantityType"]; // TODO verify this value
-
-    HKWorkoutActivityType activityTypeEnum = [WorkoutActivityConversion convertStringToHKWorkoutActivityType:activityType];
-
-    BOOL requestReadPermission = (args[@"requestReadPermission"] == nil || [args[@"requestReadPermission"] boolValue]);
-
-    // optional energy
-    NSNumber *energy = args[@"energy"];
-    NSString *energyUnit = args[@"energyUnit"];
-    HKQuantity *nrOfEnergyUnits = nil;
-    if (energy != nil && energy != (id) [NSNull null]) { // better safe than sorry
-        HKUnit *preferredEnergyUnit = [HealthKit getUnit:energyUnit expected:@"HKEnergyUnit"];
-        if (preferredEnergyUnit == nil) {
-            [HealthKit triggerErrorCallbackWithMessage:@"invalid energyUnit is passed" command:command delegate:self.commandDelegate];
-            return;
-        }
-        nrOfEnergyUnits = [HKQuantity quantityWithUnit:preferredEnergyUnit doubleValue:energy.doubleValue];
-    }
-
-    // optional distance
-    NSNumber *distance = args[@"distance"];
-    NSString *distanceUnit = args[@"distanceUnit"];
-    HKQuantity *nrOfDistanceUnits = nil;
-    if (distance != nil && distance != (id) [NSNull null]) { // better safe than sorry
-        HKUnit *preferredDistanceUnit = [HealthKit getUnit:distanceUnit expected:@"HKLengthUnit"];
-        if (preferredDistanceUnit == nil) {
-            [HealthKit triggerErrorCallbackWithMessage:@"invalid distanceUnit is passed" command:command delegate:self.commandDelegate];
-            return;
-        }
-        nrOfDistanceUnits = [HKQuantity quantityWithUnit:preferredDistanceUnit doubleValue:distance.doubleValue];
-    }
-
-    int duration = 0;
-    NSDate *startDate = [NSDate dateWithTimeIntervalSince1970:[args[HKPluginKeyStartDate] doubleValue]];
-
-
-    NSDate *endDate;
-    if (args[@"duration"] != nil) {
-        duration = [args[@"duration"] intValue];
-        endDate = [NSDate dateWithTimeIntervalSince1970:startDate.timeIntervalSince1970 + duration];
-    } else if (args[HKPluginKeyEndDate] != nil) {
-        endDate = [NSDate dateWithTimeIntervalSince1970:[args[HKPluginKeyEndDate] doubleValue]];
-    } else {
-        [HealthKit triggerErrorCallbackWithMessage:@"no duration or endDate is set" command:command delegate:self.commandDelegate];
-        return;
-    }
-
-    NSSet *types = [NSSet setWithObjects:
-            [HKWorkoutType workoutType],
-            [HKQuantityType quantityTypeForIdentifier:HKQuantityTypeIdentifierActiveEnergyBurned],
-            [HKQuantityType quantityTypeForIdentifier:quantityType],
-                    nil];
-    [[HealthKit sharedHealthStore] requestAuthorizationToShareTypes:types readTypes:(requestReadPermission ? types : nil) completion:^(BOOL success_requestAuth, NSError *error) {
-        __block HealthKit *bSelf = self;
-        if (!success_requestAuth) {
-            dispatch_sync(dispatch_get_main_queue(), ^{
-                [HealthKit triggerErrorCallbackWithMessage:error.localizedDescription command:command delegate:bSelf.commandDelegate];
+            return true;
+        } else if ("isAuthorized".equals(action)) {
+            cordova.getThreadPool().execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        checkAuthorization(args, callbackContext, false); // without autoresolve
+                    } catch (Exception ex) {
+                        callbackContext.error(ex.getMessage());
+                    }
+                }
             });
-        } else {
-            HKWorkout *workout = [HKWorkout workoutWithActivityType:activityTypeEnum
-                                                          startDate:startDate
-                                                            endDate:endDate
-                                                           duration:0 // the diff between start and end is used
-                                                  totalEnergyBurned:nrOfEnergyUnits
-                                                      totalDistance:nrOfDistanceUnits
-                                                           metadata:nil]; // TODO find out if needed
+            return true;
+        } else if ("disconnect".equals(action)) {
+            disconnect(callbackContext);
+            return true;
+        } else if ("query".equals(action)) {
+            cordova.getThreadPool().execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        query(args, callbackContext);
+                    } catch (Exception ex) {
+                        callbackContext.error(ex.getMessage());
+                    }
+                }
+            });
+            return true;
+        } else if ("queryAggregated".equals(action)) {
+            cordova.getThreadPool().execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        queryAggregated(args, callbackContext);
+                    } catch (Exception ex) {
+                        callbackContext.error(ex.getMessage());
+                    }
+                }
+            });
+            return true;
+        } else if ("store".equals(action)) {
+            cordova.getThreadPool().execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        store(args, callbackContext);
+                    } catch (Exception ex) {
+                        callbackContext.error(ex.getMessage());
+                    }
+                }
+            });
+            return true;
+        } else if ("delete".equals(action)) {
+            cordova.getThreadPool().execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        delete(args, callbackContext);
+                    } catch (Exception ex) {
+                        callbackContext.error(ex.getMessage());
+                    }
+                }
+            });
+            return true;
+        }
 
-            [[HealthKit sharedHealthStore] saveObject:workout withCompletion:^(BOOL success_save, NSError *innerError) {
-                if (success_save) {
-                    // now store the samples, so it shows up in the health app as well (pass this in as an option?)
-                    if (energy != nil || distance != nil) {
-                        HKQuantitySample *sampleActivity = [HKQuantitySample quantitySampleWithType:[HKQuantityType quantityTypeForIdentifier:
-                                        HKQuantityTypeIdentifierDistanceWalkingRunning]
-                                                                                           quantity:nrOfDistanceUnits
-                                                                                          startDate:startDate
-                                                                                            endDate:endDate];
-                        HKQuantitySample *sampleCalories = [HKQuantitySample quantitySampleWithType:[HKQuantityType quantityTypeForIdentifier:
-                                        HKQuantityTypeIdentifierActiveEnergyBurned]
-                                                                                           quantity:nrOfEnergyUnits
-                                                                                          startDate:startDate
-                                                                                            endDate:endDate];
-                        NSArray *samples = @[sampleActivity, sampleCalories];
+        return false;
+    }
 
-                        [[HealthKit sharedHealthStore] addSamples:samples toWorkout:workout completion:^(BOOL success_addSamples, NSError *mostInnerError) {
-                            if (success_addSamples) {
-                                dispatch_sync(dispatch_get_main_queue(), ^{
-                                    CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
-                                    [bSelf.commandDelegate sendPluginResult:result callbackId:command.callbackId];
-                                });
-                            } else {
-                                dispatch_sync(dispatch_get_main_queue(), ^{
-                                    [HealthKit triggerErrorCallbackWithMessage:mostInnerError.localizedDescription command:command delegate:bSelf.commandDelegate];
-                                });
-                            }
-                        }];
+    // detects if a) Google APIs are available, b) Google Fit is actually installed
+    private void isAvailable(final CallbackContext callbackContext) {
+        // first check that the Google APIs are available
+        GoogleApiAvailability gapi = GoogleApiAvailability.getInstance();
+        int apiresult = gapi.isGooglePlayServicesAvailable(this.cordova.getActivity());
+        if (apiresult == ConnectionResult.SUCCESS) {
+            // then check that Google Fit is actually installed
+            PackageManager pm = cordova.getActivity().getApplicationContext().getPackageManager();
+            try {
+                pm.getPackageInfo("com.google.android.apps.fitness", PackageManager.GET_ACTIVITIES);
+                // Success return object
+                PluginResult result;
+                result = new PluginResult(PluginResult.Status.OK, true);
+                callbackContext.sendPluginResult(result);
+            } catch (PackageManager.NameNotFoundException e) {
+                Log.d(TAG, "Google Fit not installed");
+            }
+        }
+        PluginResult result;
+        result = new PluginResult(PluginResult.Status.OK, false);
+        callbackContext.sendPluginResult(result);
+    }
+
+    /**
+     * Disconnects the client from the Google APIs
+     *
+     * @param callbackContext
+     */
+    private void disconnect(final CallbackContext callbackContext) {
+        if (mClient != null && mClient.isConnected()) {
+            Fitness.ConfigApi.disableFit(mClient).setResultCallback(new ResultCallback<Status>() {
+                @Override
+                public void onResult(@NonNull Status status) {
+                    if (status.isSuccess()) {
+                        mClient.disconnect();
+                        callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.OK, true));
                     } else {
-                      // no samples, all OK then!
-                      dispatch_sync(dispatch_get_main_queue(), ^{
-                          CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
-                          [bSelf.commandDelegate sendPluginResult:result callbackId:command.callbackId];
-                      });
+                        callbackContext.error("cannot disconnect," + status.getStatusMessage());
                     }
-                } else {
-                    dispatch_sync(dispatch_get_main_queue(), ^{
-                        [HealthKit triggerErrorCallbackWithMessage:innerError.localizedDescription command:command delegate:bSelf.commandDelegate];
-                    });
                 }
-            }];
-        }
-    }];
-}
-
-/**
- * Find workout data
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)findWorkouts:(CDVInvokedUrlCommand *)command {
-    NSPredicate *workoutPredicate = nil;
-    // TODO if a specific workouttype was passed, use that
-    //  if (false) {
-    //    workoutPredicate = [HKQuery predicateForWorkoutsWithWorkoutActivityType:HKWorkoutActivityTypeCycling];
-    //  }
-
-    NSSet *types = [NSSet setWithObjects:[HKWorkoutType workoutType], nil];
-    [[HealthKit sharedHealthStore] requestAuthorizationToShareTypes:nil readTypes:types completion:^(BOOL success, NSError *error) {
-        __block HealthKit *bSelf = self;
-        if (!success) {
-            dispatch_sync(dispatch_get_main_queue(), ^{
-                [HealthKit triggerErrorCallbackWithMessage:error.localizedDescription command:command delegate:bSelf.commandDelegate];
             });
         } else {
+            callbackContext.error("cannot disconnect, client not connected");
+        }
+    }
 
+    // prompts to install GooglePlayServices if not available then Google Fit if not available
+    private void promptInstall(final CallbackContext callbackContext) {
+        GoogleApiAvailability gapi = GoogleApiAvailability.getInstance();
+        int apiresult = gapi.isGooglePlayServicesAvailable(this.cordova.getActivity());
+        if (apiresult != ConnectionResult.SUCCESS) {
+            if (gapi.isUserResolvableError(apiresult)) {
+                // show the dialog, but no action is performed afterwards
+                gapi.showErrorDialogFragment(this.cordova.getActivity(), apiresult, 1000);
+            }
+        } else {
+            // check that Google Fit is actually installed
+            PackageManager pm = cordova.getActivity().getApplicationContext().getPackageManager();
+            try {
+                pm.getPackageInfo("com.google.android.apps.fitness", PackageManager.GET_ACTIVITIES);
+            } catch (PackageManager.NameNotFoundException e) {
+                // show popup for downloading app
+                // code from http://stackoverflow.com/questions/11753000/how-to-open-the-google-play-store-directly-from-my-android-application
+                try {
+                    cordova.getActivity().startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=com.google.android.apps.fitness")));
+                } catch (android.content.ActivityNotFoundException anfe) {
+                    cordova.getActivity().startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=com.google.android.apps.fitness")));
+                }
+            }
+        }
+        callbackContext.success();
+    }
 
-            HKSampleQuery *query = [[HKSampleQuery alloc] initWithSampleType:[HKWorkoutType workoutType] predicate:workoutPredicate limit:HKObjectQueryNoLimit sortDescriptors:nil resultsHandler:^(HKSampleQuery *sampleQuery, NSArray *results, NSError *innerError) {
-                if (innerError) {
-                    dispatch_sync(dispatch_get_main_queue(), ^{
-                        [HealthKit triggerErrorCallbackWithMessage:innerError.localizedDescription command:command delegate:bSelf.commandDelegate];
-                    });
-                } else {
-                    NSMutableArray *finalResults = [[NSMutableArray alloc] initWithCapacity:results.count];
+    // check if the app is authorised to use Google fitness APIs
+    // if autoresolve is set, it will try to get authorisation from the user
+    // also includes some OS dynamic permissions if needed (eg location)
+    private void checkAuthorization(final JSONArray args, final CallbackContext callbackContext, final boolean autoresolve) throws JSONException {
+        this.cordova.setActivityResultCallback(this);
+        authReqCallbackCtx = callbackContext;
+        authAutoresolve = autoresolve;
 
-                    for (HKWorkout *workout in results) {
-                        NSString *workoutActivity = [WorkoutActivityConversion convertHKWorkoutActivityTypeToString:workout.workoutActivityType];
+        // reset scopes
+        int bodyscope = 0;
+        int activityscope = 0;
+        int locationscope = 0;
+        int nutritionscope = 0;
+        int bloodgucosescope = 0;
+        int bloodpressurescope = 0;
 
-                        // iOS 9 moves the source property to a collection of revisions
-                        HKSource *source = nil;
-                        if ([workout respondsToSelector:@selector(sourceRevision)]) {
-                            source = [[workout valueForKey:@"sourceRevision"] valueForKey:@"source"];
+        HashSet<String> readWriteTypes = new HashSet<String>();
+        HashSet<String> readTypes = new HashSet<String>();
+
+        for (int i = 0; i < args.length(); i++) {
+            Object object = args.get(i);
+            if (object instanceof JSONObject) {
+                JSONObject readWriteObj = (JSONObject) object;
+                if (readWriteObj.has("read")) {
+                    JSONArray readArray = readWriteObj.getJSONArray("read");
+                    for (int j = 0; j < readArray.length(); j++) {
+                        readTypes.add(readArray.getString(j));
+                    }
+                }
+                if (readWriteObj.has("write")) {
+                    JSONArray writeArray = readWriteObj.getJSONArray("write");
+                    for (int j = 0; j < writeArray.length(); j++) {
+                        readWriteTypes.add(writeArray.getString(j));
+                    }
+                }
+            } else if (object instanceof String) {
+                readWriteTypes.add(String.valueOf(object));
+            }
+        }
+
+        readTypes.removeAll(readWriteTypes);
+
+        for (String readType : readTypes) {
+            if (bodydatatypes.get(readType) != null)
+                bodyscope = READ_PERMS;
+            if (activitydatatypes.get(readType) != null)
+                activityscope = READ_PERMS;
+            if (locationdatatypes.get(readType) != null)
+                locationscope = READ_PERMS;
+            if (nutritiondatatypes.get(readType) != null)
+                nutritionscope = READ_PERMS;
+            if (healthdatatypes.get(readType) == HealthDataTypes.TYPE_BLOOD_GLUCOSE)
+                bloodgucosescope = READ_PERMS;
+            if (healthdatatypes.get(readType) == HealthDataTypes.TYPE_BLOOD_PRESSURE)
+                bloodpressurescope = READ_PERMS;
+        }
+
+        for (String readWriteType : readWriteTypes) {
+            if (bodydatatypes.get(readWriteType) != null)
+                bodyscope = READ_WRITE_PERMS;
+            if (activitydatatypes.get(readWriteType) != null)
+                activityscope = READ_WRITE_PERMS;
+            if (locationdatatypes.get(readWriteType) != null)
+                locationscope = READ_WRITE_PERMS;
+            if (nutritiondatatypes.get(readWriteType) != null)
+                nutritionscope = READ_WRITE_PERMS;
+            if (healthdatatypes.get(readWriteType) == HealthDataTypes.TYPE_BLOOD_GLUCOSE)
+                bloodgucosescope = READ_WRITE_PERMS;
+            if (healthdatatypes.get(readWriteType) == HealthDataTypes.TYPE_BLOOD_PRESSURE)
+                bloodpressurescope = READ_WRITE_PERMS;
+        }
+
+        dynPerms.clear();
+        if (locationscope == READ_PERMS || locationscope == READ_WRITE_PERMS || activityscope == READ_PERMS || activityscope == READ_WRITE_PERMS) //activity requires access to location to report distace
+            dynPerms.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        if (bodyscope == READ_PERMS || bodyscope == READ_WRITE_PERMS)
+            dynPerms.add(Manifest.permission.BODY_SENSORS);
+
+        GoogleApiClient.Builder builder = new GoogleApiClient.Builder(this.cordova.getActivity());
+        builder.addApi(Fitness.HISTORY_API);
+        builder.addApi(Fitness.CONFIG_API);
+        builder.addApi(Fitness.SESSIONS_API);
+        // scopes: https://developers.google.com/android/reference/com/google/android/gms/common/Scopes.html
+        if (bodyscope == READ_PERMS) {
+            builder.addScope(new Scope(Scopes.FITNESS_BODY_READ));
+        } else if (bodyscope == READ_WRITE_PERMS) {
+            builder.addScope(new Scope(Scopes.FITNESS_BODY_READ_WRITE));
+        }
+        if (activityscope == READ_PERMS) {
+            builder.addScope(new Scope(Scopes.FITNESS_ACTIVITY_READ));
+        } else if (activityscope == READ_WRITE_PERMS) {
+            builder.addScope(new Scope(Scopes.FITNESS_ACTIVITY_READ_WRITE));
+        }
+        if (locationscope == READ_WRITE_PERMS) { //specifially request read write permission for location.
+            builder.addScope(new Scope(Scopes.FITNESS_LOCATION_READ_WRITE));
+        } else if (locationscope == READ_PERMS || activityscope == READ_PERMS || activityscope == READ_WRITE_PERMS) { // if read permission request for location or any read/write permissions for activities were requested then give read location
+            builder.addScope(new Scope(Scopes.FITNESS_LOCATION_READ));
+        }
+        if (nutritionscope == READ_PERMS) {
+            builder.addScope(new Scope(Scopes.FITNESS_NUTRITION_READ));
+        } else if (nutritionscope == READ_WRITE_PERMS) {
+            builder.addScope(new Scope(Scopes.FITNESS_NUTRITION_READ_WRITE));
+        }
+        if (bloodgucosescope == READ_PERMS) {
+            builder.addScope(new Scope(Scopes.FITNESS_BLOOD_GLUCOSE_READ));
+        } else if (bloodgucosescope == READ_WRITE_PERMS) {
+            builder.addScope(new Scope(Scopes.FITNESS_BLOOD_GLUCOSE_READ_WRITE));
+        }
+        if (bloodpressurescope == READ_PERMS) {
+            builder.addScope(new Scope(Scopes.FITNESS_BLOOD_PRESSURE_READ));
+        } else if (bloodpressurescope == READ_WRITE_PERMS) {
+            builder.addScope(new Scope(Scopes.FITNESS_BLOOD_PRESSURE_READ_WRITE));
+        }
+
+        builder.addConnectionCallbacks(new GoogleApiClient.ConnectionCallbacks() {
+
+            @Override
+            public void onConnected(Bundle bundle) {
+                mClient.unregisterConnectionCallbacks(this);
+                Log.i(TAG, "Google Fit connected");
+                authReqSuccess();
+            }
+
+            @Override
+            public void onConnectionSuspended(int i) {
+                String message = "";
+                if (i == GoogleApiClient.ConnectionCallbacks.CAUSE_NETWORK_LOST) {
+                    message = "connection lost, network lost";
+                } else if (i == GoogleApiClient.ConnectionCallbacks.CAUSE_SERVICE_DISCONNECTED) {
+                    message = "connection lost, service disconnected";
+                } else message = "connection lost, code: " + i;
+                Log.e(TAG, message);
+                authReqCallbackCtx.error(message);
+            }
+        });
+
+        builder.addOnConnectionFailedListener(
+                new GoogleApiClient.OnConnectionFailedListener() {
+                    @Override
+                    public void onConnectionFailed(ConnectionResult result) {
+                        Log.i(TAG, "Connection to Fit failed, cause: " + result.getErrorMessage());
+                        if (!result.hasResolution()) {
+                            Log.e(TAG, "Connection failure has no resolution: " + result.getErrorMessage());
+                            authReqCallbackCtx.error(result.getErrorMessage());
+                            return;
                         } else {
-                            //@TODO Update deprecated API call
-                            source = workout.source;
+                            if (authAutoresolve) {
+                                // The failure has a resolution. Resolve it.
+                                // Called typically when the app is not yet authorized, and an
+                                // authorization dialog is displayed to the user.
+                                try {
+                                    Log.i(TAG, "Attempting to resolve failed connection");
+                                    result.startResolutionForResult(cordova.getActivity(), REQUEST_OAUTH);
+                                } catch (IntentSender.SendIntentException e) {
+                                    Log.e(TAG, "Exception while starting resolution activity", e);
+                                    authReqCallbackCtx.error(result.getErrorMessage());
+                                    return;
+                                }
+                            } else {
+                                // probably not authorized, send false
+                                Log.d(TAG, "Connection to Fit failed, probably because of authorization, giving up now");
+                                authReqCallbackCtx.sendPluginResult(new PluginResult(PluginResult.Status.OK, false));
+                                return;
+                            }
                         }
+                    }
+                }
+        );
+        mClient = builder.build();
+        mClient.connect();
+    }
 
-                        // TODO: use a float value, or switch to metric
-                        double miles = [workout.totalDistance doubleValueForUnit:[HKUnit meterUnit]];
-                        NSString *milesString = [NSString stringWithFormat:@"%ld", (long) miles];
+    // helper function, connects to fitness APIs assuming that authorisation was granted
+    private boolean lightConnect() {
+        this.cordova.setActivityResultCallback(this);
 
-                        NSEnergyFormatter *energyFormatter = [NSEnergyFormatter new];
-                        energyFormatter.forFoodEnergyUse = NO;
-                        double cals = [workout.totalEnergyBurned doubleValueForUnit:[HKUnit kilocalorieUnit]];
-                        NSString *calories = [energyFormatter stringFromValue:cals unit:[HKUnit kilocalorieUnit]];
+        GoogleApiClient.Builder builder = new GoogleApiClient.Builder(this.cordova.getActivity().getApplicationContext());
+        builder.addApi(Fitness.HISTORY_API);
+        builder.addApi(Fitness.CONFIG_API);
+        builder.addApi(Fitness.SESSIONS_API);
 
-                        NSMutableDictionary *entry = [
-                                @{
-                                        @"duration": @(workout.duration),
-                                        HKPluginKeyStartDate: [HealthKit stringFromDate:workout.startDate],
-                                        HKPluginKeyEndDate: [HealthKit stringFromDate:workout.endDate],
-                                        @"distance": milesString,
-                                        @"energy": calories,
-                                        HKPluginKeySourceBundleId: source.bundleIdentifier,
-                                        HKPluginKeySourceName: source.name,
-                                        @"activityType": workoutActivity,
-                                        @"UUID": [workout.UUID UUIDString]
-                                } mutableCopy
-                        ];
+        mClient = builder.build();
+        mClient.blockingConnect();
+        if (mClient.isConnected()) {
+            Log.i(TAG, "Google Fit connected (light)");
+            return true;
+        } else {
+            return false;
+        }
+    }
 
-                        [finalResults addObject:entry];
+
+    // queries for datapoints
+    private void query(final JSONArray args, final CallbackContext callbackContext) throws JSONException {
+        if (!args.getJSONObject(0).has("startDate")) {
+            callbackContext.error("Missing argument startDate");
+            return;
+        }
+        long st = args.getJSONObject(0).getLong("startDate");
+        if (!args.getJSONObject(0).has("endDate")) {
+            callbackContext.error("Missing argument endDate");
+            return;
+        }
+        long et = args.getJSONObject(0).getLong("endDate");
+        if (!args.getJSONObject(0).has("dataType")) {
+            callbackContext.error("Missing argument dataType");
+            return;
+        }
+        String datatype = args.getJSONObject(0).getString("dataType");
+        DataType dt = null;
+
+        if (bodydatatypes.get(datatype) != null)
+            dt = bodydatatypes.get(datatype);
+        if (activitydatatypes.get(datatype) != null)
+            dt = activitydatatypes.get(datatype);
+        if (locationdatatypes.get(datatype) != null)
+            dt = locationdatatypes.get(datatype);
+        if (nutritiondatatypes.get(datatype) != null)
+            dt = nutritiondatatypes.get(datatype);
+        if (customdatatypes.get(datatype) != null)
+            dt = customdatatypes.get(datatype);
+        if (healthdatatypes.get(datatype) != null)
+            dt = healthdatatypes.get(datatype);
+        if (dt == null) {
+            callbackContext.error("Datatype " + datatype + " not supported");
+            return;
+        }
+        final DataType DT = dt;
+
+        if ((mClient == null) || (!mClient.isConnected())) {
+            if (!lightConnect()) {
+                callbackContext.error("Cannot connect to Google Fit");
+                return;
+            }
+        }
+
+        DataReadRequest.Builder readRequestBuilder = new DataReadRequest.Builder();
+        readRequestBuilder.setTimeRange(st, et, TimeUnit.MILLISECONDS);
+
+        if (DT.equals(DataType.TYPE_STEP_COUNT_DELTA) && args.getJSONObject(0).has("filtered") && args.getJSONObject(0).getBoolean("filtered")) {
+            // exceptional case for filtered steps
+            DataSource filteredStepsSource = new DataSource.Builder()
+                    .setDataType(DataType.TYPE_STEP_COUNT_DELTA)
+                    .setType(DataSource.TYPE_DERIVED)
+                    .setStreamName("estimated_steps")
+                    .setAppPackageName("com.google.android.gms")
+                    .build();
+
+            readRequestBuilder.read(filteredStepsSource);
+        } else {
+            readRequestBuilder.read(dt);
+        }
+
+        Integer limit = null;
+        if (args.getJSONObject(0).has("limit")) {
+            limit = args.getJSONObject(0).getInt("limit");
+            readRequestBuilder.setLimit(limit);
+        }
+
+
+        DataReadResult dataReadResult = Fitness.HistoryApi.readData(mClient, readRequestBuilder.build()).await();
+
+        if (dataReadResult.getStatus().isSuccess()) {
+            JSONArray resultset = new JSONArray();
+            List<DataSet> datasets = dataReadResult.getDataSets();
+            for (DataSet dataset : datasets) {
+                for (DataPoint datapoint : dataset.getDataPoints()) {
+                    JSONObject obj = new JSONObject();
+                    obj.put("startDate", datapoint.getStartTime(TimeUnit.MILLISECONDS));
+                    obj.put("endDate", datapoint.getEndTime(TimeUnit.MILLISECONDS));
+                    DataSource dataSource = datapoint.getOriginalDataSource();
+                    if (dataSource != null) {
+                        String sourceName = dataSource.getName();
+                        if (sourceName != null) obj.put("sourceName", sourceName);
+                        String sourceBundleId = dataSource.getAppPackageName();
+                        if (sourceBundleId != null) obj.put("sourceBundleId", sourceBundleId);
                     }
 
-                    dispatch_sync(dispatch_get_main_queue(), ^{
-                        CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsArray:finalResults];
-                        [bSelf.commandDelegate sendPluginResult:result callbackId:command.callbackId];
-                    });
+                    //reference for fields: https://developers.google.com/android/reference/com/google/android/gms/fitness/data/Field.html
+                    if (DT.equals(DataType.TYPE_STEP_COUNT_DELTA)) {
+                        int steps = datapoint.getValue(Field.FIELD_STEPS).asInt();
+                        obj.put("value", steps);
+                        obj.put("unit", "count");
+                    } else if (DT.equals(DataType.TYPE_DISTANCE_DELTA)) {
+                        float distance = datapoint.getValue(Field.FIELD_DISTANCE).asFloat();
+                        obj.put("value", distance);
+                        obj.put("unit", "m");
+                    } else if (DT.equals(DataType.TYPE_HYDRATION)) {
+                        float distance = datapoint.getValue(Field.FIELD_VOLUME).asFloat();
+                        obj.put("value", distance);
+                        obj.put("unit", "ml");// documentation says it's litres, but from experiments I get ml
+                    } else if (DT.equals(DataType.TYPE_NUTRITION)) {
+                        if (datatype.equalsIgnoreCase("nutrition")) {
+                            JSONObject dob = new JSONObject();
+                            if (datapoint.getValue(Field.FIELD_FOOD_ITEM) != null) {
+                                dob.put("item", datapoint.getValue(Field.FIELD_FOOD_ITEM).asString());
+                            }
+                            if (datapoint.getValue(Field.FIELD_MEAL_TYPE) != null) {
+                                int mealt = datapoint.getValue(Field.FIELD_MEAL_TYPE).asInt();
+                                if (mealt == Field.MEAL_TYPE_BREAKFAST)
+                                    dob.put("meal_type", "breakfast");
+                                else if (mealt == Field.MEAL_TYPE_DINNER)
+                                    dob.put("meal_type", "dinner");
+                                else if (mealt == Field.MEAL_TYPE_LUNCH)
+                                    dob.put("meal_type", "lunch");
+                                else if (mealt == Field.MEAL_TYPE_SNACK)
+                                    dob.put("meal_type", "snack");
+                                else dob.put("meal_type", "unknown");
+                            }
+                            if (datapoint.getValue(Field.FIELD_NUTRIENTS) != null) {
+                                Value v = datapoint.getValue(Field.FIELD_NUTRIENTS);
+                                dob.put("nutrients", getNutrients(v, null));
+                            }
+                            obj.put("value", dob);
+                            obj.put("unit", "nutrition");
+                        } else {
+                            Value nutrients = datapoint.getValue(Field.FIELD_NUTRIENTS);
+                            NutrientFieldInfo fieldInfo = nutrientFields.get(datatype);
+                            if (fieldInfo != null) {
+                                if (nutrients.getKeyValue(fieldInfo.field) != null) {
+                                    obj.put("value", (float) nutrients.getKeyValue(fieldInfo.field));
+                                } else {
+                                    obj.put("value", 0f);
+                                }
+                                obj.put("unit", fieldInfo.unit);
+                            }
+                        }
+                    } else if (DT.equals(DataType.TYPE_CALORIES_EXPENDED)) {
+                        float calories = datapoint.getValue(Field.FIELD_CALORIES).asFloat();
+                        obj.put("value", calories);
+                        obj.put("unit", "kcal");
+                    } else if (DT.equals(DataType.TYPE_BASAL_METABOLIC_RATE)) {
+                        float calories = datapoint.getValue(Field.FIELD_CALORIES).asFloat();
+                        obj.put("value", calories);
+                        obj.put("unit", "kcal");
+                    } else if (DT.equals(DataType.TYPE_HEIGHT)) {
+                        float height = datapoint.getValue(Field.FIELD_HEIGHT).asFloat();
+                        obj.put("value", height);
+                        obj.put("unit", "m");
+                    } else if (DT.equals(DataType.TYPE_WEIGHT)) {
+                        float weight = datapoint.getValue(Field.FIELD_WEIGHT).asFloat();
+                        obj.put("value", weight);
+                        obj.put("unit", "kg");
+                    } else if (DT.equals(DataType.TYPE_HEART_RATE_BPM)) {
+                        float weight = datapoint.getValue(Field.FIELD_BPM).asFloat();
+                        obj.put("value", weight);
+                        obj.put("unit", "bpm");
+                    } else if (DT.equals(DataType.TYPE_BODY_FAT_PERCENTAGE)) {
+                        float weight = datapoint.getValue(Field.FIELD_PERCENTAGE).asFloat();
+                        obj.put("value", weight);
+                        obj.put("unit", "percent");
+                    } else if (DT.equals(DataType.TYPE_ACTIVITY_SEGMENT)) {
+                        String activity = datapoint.getValue(Field.FIELD_ACTIVITY).asActivity();
+                        obj.put("value", activity);
+                        obj.put("unit", "activityType");
+
+                        //extra queries to get calorie and distance records related to the activity times
+                        DataReadRequest.Builder readActivityRequestBuilder = new DataReadRequest.Builder();
+                        readActivityRequestBuilder.setTimeRange(datapoint.getStartTime(TimeUnit.MILLISECONDS), datapoint.getEndTime(TimeUnit.MILLISECONDS), TimeUnit.MILLISECONDS)
+                                .read(DataType.TYPE_DISTANCE_DELTA)
+                                .read(DataType.TYPE_CALORIES_EXPENDED);
+
+                        DataReadResult dataReadActivityResult = Fitness.HistoryApi.readData(mClient, readActivityRequestBuilder.build()).await();
+
+                        if (dataReadActivityResult.getStatus().isSuccess()) {
+                            float totaldistance = 0;
+                            float totalcalories = 0;
+
+                            List<DataSet> dataActivitySets = dataReadActivityResult.getDataSets();
+                            for (DataSet dataActivitySet : dataActivitySets) {
+                                for (DataPoint dataActivityPoint : dataActivitySet.getDataPoints()) {
+                                    if (dataActivitySet.getDataType().equals(DataType.TYPE_DISTANCE_DELTA)) {
+                                        float distance = dataActivityPoint.getValue(Field.FIELD_DISTANCE).asFloat();
+                                        totaldistance += distance;
+                                    } else {
+                                        float calories = dataActivityPoint.getValue(Field.FIELD_CALORIES).asFloat();
+                                        totalcalories += calories;
+                                    }
+                                }
+                            }
+                            obj.put("distance", totaldistance);
+                            obj.put("calories", totalcalories);
+                        }
+                    } else if (DT.equals(customdatatypes.get("gender"))) {
+                        for (Field f : customdatatypes.get("gender").getFields()) {
+                            //there should be only one field named gender
+                            String gender = datapoint.getValue(f).asString();
+                            obj.put("value", gender);
+                        }
+                    } else if (DT.equals(customdatatypes.get("date_of_birth"))) {
+                        JSONObject dob = new JSONObject();
+                        for (Field f : customdatatypes.get("date_of_birth").getFields()) {
+                            //all fields are integers
+                            int fieldvalue = datapoint.getValue(f).asInt();
+                            dob.put(f.getName(), fieldvalue);
+                        }
+                        obj.put("value", dob);
+                    } else if (DT.equals(HealthDataTypes.TYPE_BLOOD_GLUCOSE)) {
+                        JSONObject glucob = new JSONObject();
+                        float glucose = datapoint.getValue(HealthFields.FIELD_BLOOD_GLUCOSE_LEVEL).asFloat();
+                        glucob.put("glucose", glucose);
+                        if (datapoint.getValue(HealthFields.FIELD_TEMPORAL_RELATION_TO_MEAL).isSet() &&
+                                datapoint.getValue(Field.FIELD_MEAL_TYPE).isSet()) {
+                            int temp_to_meal = datapoint.getValue(HealthFields.FIELD_TEMPORAL_RELATION_TO_MEAL).asInt();
+                            String meal = "";
+                            if (temp_to_meal == HealthFields.FIELD_TEMPORAL_RELATION_TO_MEAL_AFTER_MEAL) {
+                                meal = "after_";
+                            } else if (temp_to_meal == HealthFields.FIELD_TEMPORAL_RELATION_TO_MEAL_BEFORE_MEAL) {
+                                meal = "before_";
+                            } else if (temp_to_meal == HealthFields.FIELD_TEMPORAL_RELATION_TO_MEAL_FASTING) {
+                                meal = "fasting";
+                            } else if (temp_to_meal == HealthFields.FIELD_TEMPORAL_RELATION_TO_MEAL_GENERAL) {
+                                meal = "";
+                            }
+                            if (temp_to_meal != HealthFields.FIELD_TEMPORAL_RELATION_TO_MEAL_FASTING) {
+                                switch (datapoint.getValue(Field.FIELD_MEAL_TYPE).asInt()) {
+                                    case Field.MEAL_TYPE_BREAKFAST:
+                                        meal += "breakfast";
+                                        break;
+                                    case Field.MEAL_TYPE_DINNER:
+                                        meal += "dinner";
+                                        break;
+                                    case Field.MEAL_TYPE_LUNCH:
+                                        meal += "lunch";
+                                        break;
+                                    case Field.MEAL_TYPE_SNACK:
+                                        meal += "snack";
+                                        break;
+                                    default:
+                                        meal = "unknown";
+                                }
+                            }
+                            glucob.put("meal", meal);
+                        }
+                        if (datapoint.getValue(HealthFields.FIELD_TEMPORAL_RELATION_TO_SLEEP).isSet()) {
+                            String sleep = "";
+                            switch (datapoint.getValue(HealthFields.FIELD_TEMPORAL_RELATION_TO_SLEEP).asInt()) {
+                                case HealthFields.TEMPORAL_RELATION_TO_SLEEP_BEFORE_SLEEP:
+                                    sleep = "before_sleep";
+                                    break;
+                                case HealthFields.TEMPORAL_RELATION_TO_SLEEP_DURING_SLEEP:
+                                    sleep = "during_sleep";
+                                    break;
+                                case HealthFields.TEMPORAL_RELATION_TO_SLEEP_FULLY_AWAKE:
+                                    sleep = "fully_awake";
+                                    break;
+                                case HealthFields.TEMPORAL_RELATION_TO_SLEEP_ON_WAKING:
+                                    sleep = "on_waking";
+                                    break;
+                            }
+                            glucob.put("sleep", sleep);
+                        }
+                        if (datapoint.getValue(HealthFields.FIELD_BLOOD_GLUCOSE_SPECIMEN_SOURCE).isSet()) {
+                            String source = "";
+                            switch (datapoint.getValue(HealthFields.FIELD_BLOOD_GLUCOSE_SPECIMEN_SOURCE).asInt()) {
+                                case HealthFields.BLOOD_GLUCOSE_SPECIMEN_SOURCE_CAPILLARY_BLOOD:
+                                    source = "capillary_blood";
+                                    break;
+                                case HealthFields.BLOOD_GLUCOSE_SPECIMEN_SOURCE_INTERSTITIAL_FLUID:
+                                    source = "interstitial_fluid";
+                                    break;
+                                case HealthFields.BLOOD_GLUCOSE_SPECIMEN_SOURCE_PLASMA:
+                                    source = "plasma";
+                                    break;
+                                case HealthFields.BLOOD_GLUCOSE_SPECIMEN_SOURCE_SERUM:
+                                    source = "serum";
+                                    break;
+                                case HealthFields.BLOOD_GLUCOSE_SPECIMEN_SOURCE_TEARS:
+                                    source = "tears";
+                                    break;
+                                case HealthFields.BLOOD_GLUCOSE_SPECIMEN_SOURCE_WHOLE_BLOOD:
+                                    source = "whole_blood";
+                                    break;
+                            }
+                            glucob.put("source", source);
+                        }
+                        obj.put("value", glucob);
+                        obj.put("unit", "mmol/L");
+                    } else if (DT.equals(HealthDataTypes.TYPE_BLOOD_PRESSURE)) {
+                        JSONObject bpobj = new JSONObject();
+                        if (datapoint.getValue(HealthFields.FIELD_BLOOD_PRESSURE_SYSTOLIC).isSet()) {
+                            float systolic = datapoint.getValue(HealthFields.FIELD_BLOOD_PRESSURE_SYSTOLIC).asFloat();
+                            bpobj.put("systolic", systolic);
+                        }
+                        if (datapoint.getValue(HealthFields.FIELD_BLOOD_PRESSURE_DIASTOLIC).isSet()) {
+                            float diastolic = datapoint.getValue(HealthFields.FIELD_BLOOD_PRESSURE_DIASTOLIC).asFloat();
+                            bpobj.put("diastolic", diastolic);
+                        }
+                        obj.put("value", bpobj);
+                        obj.put("unit", "mmHg");
+                    }
+                    resultset.put(obj);
                 }
-            }];
-            [[HealthKit sharedHealthStore] executeQuery:query];
-        }
-    }];
-}
-
-/**
- * Save weight data
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)saveWeight:(CDVInvokedUrlCommand *)command {
-    NSMutableDictionary *args = command.arguments[0];
-    NSString *unit = args[HKPluginKeyUnit];
-    NSNumber *amount = args[HKPluginKeyAmount];
-    NSDate *date = [NSDate dateWithTimeIntervalSince1970:[args[@"date"] doubleValue]];
-    BOOL requestReadPermission = (args[@"requestReadPermission"] == nil || [args[@"requestReadPermission"] boolValue]);
-
-    if (amount == nil) {
-        CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"no amount was set"];
-        [self.commandDelegate sendPluginResult:result callbackId:command.callbackId];
-        return;
-    }
-
-    HKUnit *preferredUnit = [HealthKit getUnit:unit expected:@"HKMassUnit"];
-    if (preferredUnit == nil) {
-        [HealthKit triggerErrorCallbackWithMessage:@"invalid unit is passed" command:command delegate:self.commandDelegate];
-        return;
-    }
-
-    HKQuantityType *weightType = [HKQuantityType quantityTypeForIdentifier:HKQuantityTypeIdentifierBodyMass];
-    NSSet *requestTypes = [NSSet setWithObjects:weightType, nil];
-    __block HealthKit *bSelf = self;
-    [[HealthKit sharedHealthStore] requestAuthorizationToShareTypes:requestTypes readTypes:(requestReadPermission ? requestTypes : nil) completion:^(BOOL success, NSError *error) {
-        if (success) {
-            HKQuantity *weightQuantity = [HKQuantity quantityWithUnit:preferredUnit doubleValue:[amount doubleValue]];
-            HKQuantitySample *weightSample = [HKQuantitySample quantitySampleWithType:weightType quantity:weightQuantity startDate:date endDate:date];
-            [[HealthKit sharedHealthStore] saveObject:weightSample withCompletion:^(BOOL success_save, NSError *errorInner) {
-                if (success_save) {
-                    dispatch_sync(dispatch_get_main_queue(), ^{
-                        CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
-                        [bSelf.commandDelegate sendPluginResult:result callbackId:command.callbackId];
-                    });
-                } else {
-                    dispatch_sync(dispatch_get_main_queue(), ^{
-                        [HealthKit triggerErrorCallbackWithMessage:errorInner.localizedDescription command:command delegate:bSelf.commandDelegate];
-                    });
-                }
-            }];
+            }
+            callbackContext.success(resultset);
         } else {
-            dispatch_sync(dispatch_get_main_queue(), ^{
-                [HealthKit triggerErrorCallbackWithMessage:error.localizedDescription command:command delegate:bSelf.commandDelegate];
-            });
+            callbackContext.error(dataReadResult.getStatus().getStatusMessage());
         }
-    }];
-}
-
-/**
- * Read weight data
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)readWeight:(CDVInvokedUrlCommand *)command {
-    NSDictionary *args = command.arguments[0];
-    NSString *unit = args[HKPluginKeyUnit];
-    BOOL requestWritePermission = (args[@"requestWritePermission"] == nil || [args[@"requestWritePermission"] boolValue]);
-
-    HKUnit *preferredUnit = [HealthKit getUnit:unit expected:@"HKMassUnit"];
-    if (preferredUnit == nil) {
-        [HealthKit triggerErrorCallbackWithMessage:@"invalid unit is passed" command:command delegate:self.commandDelegate];
-        return;
     }
 
-    // Query to get the user's latest weight, if it exists.
-    HKQuantityType *weightType = [HKQuantityType quantityTypeForIdentifier:HKQuantityTypeIdentifierBodyMass];
-    NSSet *requestTypes = [NSSet setWithObjects:weightType, nil];
-    // always ask for read and write permission if the app uses both, because granting read will remove write for the same type :(
-    [[HealthKit sharedHealthStore] requestAuthorizationToShareTypes:(requestWritePermission ? requestTypes : nil) readTypes:requestTypes completion:^(BOOL success, NSError *error) {
-        __block HealthKit *bSelf = self;
-        if (success) {
-            [[HealthKit sharedHealthStore] aapl_mostRecentQuantitySampleOfType:weightType predicate:nil completion:^(HKQuantity *mostRecentQuantity, NSDate *mostRecentDate, NSError *errorInner) {
-                if (mostRecentQuantity) {
-                    double usersWeight = [mostRecentQuantity doubleValueForUnit:preferredUnit];
-                    NSMutableDictionary *entry = [
-                            @{
-                                    HKPluginKeyValue: @(usersWeight),
-                                    HKPluginKeyUnit: unit,
-                                    @"date": [HealthKit stringFromDate:mostRecentDate]
-                            } mutableCopy
-                    ];
-
-                    //@TODO formerly dispatch_async
-                    dispatch_sync(dispatch_get_main_queue(), ^{
-                        CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:entry];
-                        [bSelf.commandDelegate sendPluginResult:result callbackId:command.callbackId];
-                    });
-                } else {
-                    //@TODO formerly dispatch_async
-                    dispatch_sync(dispatch_get_main_queue(), ^{
-                        NSString *errorDescription = ((errorInner.localizedDescription == nil) ? @"no data" : errorInner.localizedDescription);
-                        [HealthKit triggerErrorCallbackWithMessage:errorDescription command:command delegate:bSelf.commandDelegate];
-                    });
-                }
-            }];
+    // utility function, gets nutrients from a Value and merges the value inside a json object
+    private JSONObject getNutrients(Value nutrientsMap, JSONObject mergewith) throws JSONException {
+        JSONObject nutrients;
+        if (mergewith != null) {
+            nutrients = mergewith;
         } else {
-            dispatch_sync(dispatch_get_main_queue(), ^{
-                [HealthKit triggerErrorCallbackWithMessage:error.localizedDescription command:command delegate:bSelf.commandDelegate];
-            });
+            nutrients = new JSONObject();
         }
-    }];
-}
+        mergeNutrient(Field.NUTRIENT_CALORIES, nutrientsMap, nutrients);
+        mergeNutrient(Field.NUTRIENT_TOTAL_FAT, nutrientsMap, nutrients);
+        mergeNutrient(Field.NUTRIENT_SATURATED_FAT, nutrientsMap, nutrients);
+        mergeNutrient(Field.NUTRIENT_UNSATURATED_FAT, nutrientsMap, nutrients);
+        mergeNutrient(Field.NUTRIENT_POLYUNSATURATED_FAT, nutrientsMap, nutrients);
+        mergeNutrient(Field.NUTRIENT_MONOUNSATURATED_FAT, nutrientsMap, nutrients);
+        mergeNutrient(Field.NUTRIENT_TRANS_FAT, nutrientsMap, nutrients);
+        mergeNutrient(Field.NUTRIENT_CHOLESTEROL, nutrientsMap, nutrients);
+        mergeNutrient(Field.NUTRIENT_SODIUM, nutrientsMap, nutrients);
+        mergeNutrient(Field.NUTRIENT_POTASSIUM, nutrientsMap, nutrients);
+        mergeNutrient(Field.NUTRIENT_TOTAL_CARBS, nutrientsMap, nutrients);
+        mergeNutrient(Field.NUTRIENT_DIETARY_FIBER, nutrientsMap, nutrients);
+        mergeNutrient(Field.NUTRIENT_SUGAR, nutrientsMap, nutrients);
+        mergeNutrient(Field.NUTRIENT_PROTEIN, nutrientsMap, nutrients);
+        mergeNutrient(Field.NUTRIENT_VITAMIN_A, nutrientsMap, nutrients);
+        mergeNutrient(Field.NUTRIENT_VITAMIN_C, nutrientsMap, nutrients);
+        mergeNutrient(Field.NUTRIENT_CALCIUM, nutrientsMap, nutrients);
+        mergeNutrient(Field.NUTRIENT_IRON, nutrientsMap, nutrients);
 
-/**
- * Save height data
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)saveHeight:(CDVInvokedUrlCommand *)command {
-    NSDictionary *args = command.arguments[0];
-    NSString *unit = args[HKPluginKeyUnit];
-    NSNumber *amount = args[HKPluginKeyAmount];
-    NSDate *date = [NSDate dateWithTimeIntervalSince1970:[args[@"date"] doubleValue]];
-    BOOL requestReadPermission = (args[@"requestReadPermission"] == nil || [args[@"requestReadPermission"] boolValue]);
-
-    if (amount == nil) {
-        [HealthKit triggerErrorCallbackWithMessage:@"no amount is set" command:command delegate:self.commandDelegate];
-        return;
+        return nutrients;
     }
 
-    HKUnit *preferredUnit = [HealthKit getUnit:unit expected:@"HKLengthUnit"];
-    if (preferredUnit == nil) {
-        [HealthKit triggerErrorCallbackWithMessage:@"invalid unit is passed" command:command delegate:self.commandDelegate];
-        return;
+    // utility function, merges a nutrient in an json object
+    private void mergeNutrient(String f, Value nutrientsMap, JSONObject nutrients) throws JSONException {
+        if (nutrientsMap.getKeyValue(f) != null) {
+            String n = null;
+            for (String name : nutrientFields.keySet()) {
+                if (nutrientFields.get(name).field.equalsIgnoreCase(f)) {
+                    n = name;
+                    break;
+                }
+            }
+            if (n != null) {
+                float val = nutrientsMap.getKeyValue(f);
+                if (nutrients.has(n)) {
+                    val += nutrients.getDouble(n);
+                }
+                nutrients.put(n, val);
+            }
+        }
     }
 
-    HKQuantityType *heightType = [HKQuantityType quantityTypeForIdentifier:HKQuantityTypeIdentifierHeight];
-    NSSet *requestTypes = [NSSet setWithObjects:heightType, nil];
-    [[HealthKit sharedHealthStore] requestAuthorizationToShareTypes:requestTypes readTypes:(requestReadPermission ? requestTypes : nil) completion:^(BOOL success_requestAuth, NSError *error) {
-        __block HealthKit *bSelf = self;
-        if (success_requestAuth) {
-            HKQuantity *heightQuantity = [HKQuantity quantityWithUnit:preferredUnit doubleValue:[amount doubleValue]];
-            HKQuantitySample *heightSample = [HKQuantitySample quantitySampleWithType:heightType quantity:heightQuantity startDate:date endDate:date];
-            [[HealthKit sharedHealthStore] saveObject:heightSample withCompletion:^(BOOL success_save, NSError *innerError) {
-                if (success_save) {
-                    dispatch_sync(dispatch_get_main_queue(), ^{
-                        CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
-                        [bSelf.commandDelegate sendPluginResult:result callbackId:command.callbackId];
-                    });
-                } else {
-                    dispatch_sync(dispatch_get_main_queue(), ^{
-                        [HealthKit triggerErrorCallbackWithMessage:innerError.localizedDescription command:command delegate:bSelf.commandDelegate];
-                    });
-                }
-            }];
-        } else {
-            dispatch_sync(dispatch_get_main_queue(), ^{
-                [HealthKit triggerErrorCallbackWithMessage:error.localizedDescription command:command delegate:bSelf.commandDelegate];
-            });
+    // queries and aggregates data
+    private void queryAggregated(final JSONArray args, final CallbackContext callbackContext) throws JSONException {
+        if (!args.getJSONObject(0).has("startDate")) {
+            callbackContext.error("Missing argument startDate");
+            return;
         }
-    }];
-}
-
-/**
- * Read height data
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)readHeight:(CDVInvokedUrlCommand *)command {
-    NSDictionary *args = command.arguments[0];
-    NSString *unit = args[HKPluginKeyUnit];
-    BOOL requestWritePermission = (args[@"requestWritePermission"] == nil || [args[@"requestWritePermission"] boolValue]);
-
-    HKUnit *preferredUnit = [HealthKit getUnit:unit expected:@"HKLengthUnit"];
-    if (preferredUnit == nil) {
-        [HealthKit triggerErrorCallbackWithMessage:@"invalid unit is passed" command:command delegate:self.commandDelegate];
-        return;
-    }
-
-    // Query to get the user's latest height, if it exists.
-    HKQuantityType *heightType = [HKQuantityType quantityTypeForIdentifier:HKQuantityTypeIdentifierHeight];
-    NSSet *requestTypes = [NSSet setWithObjects:heightType, nil];
-    // always ask for read and write permission if the app uses both, because granting read will remove write for the same type :(
-    [[HealthKit sharedHealthStore] requestAuthorizationToShareTypes:(requestWritePermission ? requestTypes : nil) readTypes:requestTypes completion:^(BOOL success, NSError *error) {
-        __block HealthKit *bSelf = self;
-        if (success) {
-            [[HealthKit sharedHealthStore] aapl_mostRecentQuantitySampleOfType:heightType predicate:nil completion:^(HKQuantity *mostRecentQuantity, NSDate *mostRecentDate, NSError *errorInner) { // TODO use
-                if (mostRecentQuantity) {
-                    double usersHeight = [mostRecentQuantity doubleValueForUnit:preferredUnit];
-                    NSMutableDictionary *entry = [
-                            @{
-                                    HKPluginKeyValue: @(usersHeight),
-                                    HKPluginKeyUnit: unit,
-                                    @"date": [HealthKit stringFromDate:mostRecentDate]
-                            } mutableCopy
-                    ];
-
-                    //@TODO formerly dispatch_async
-                    dispatch_sync(dispatch_get_main_queue(), ^{
-                        CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:entry];
-                        [bSelf.commandDelegate sendPluginResult:result callbackId:command.callbackId];
-                    });
-                } else {
-                    //@TODO formerly dispatch_async
-                    dispatch_sync(dispatch_get_main_queue(), ^{
-                        NSString *errorDescritption = ((errorInner.localizedDescription == nil) ? @"no data" : errorInner.localizedDescription);
-                        [HealthKit triggerErrorCallbackWithMessage:errorDescritption command:command delegate:bSelf.commandDelegate];
-                    });
-                }
-            }];
-        } else {
-            dispatch_sync(dispatch_get_main_queue(), ^{
-                [HealthKit triggerErrorCallbackWithMessage:error.localizedDescription command:command delegate:bSelf.commandDelegate];
-            });
+        long st = args.getJSONObject(0).getLong("startDate");
+        if (!args.getJSONObject(0).has("endDate")) {
+            callbackContext.error("Missing argument endDate");
+            return;
         }
-    }];
-}
+        long et = args.getJSONObject(0).getLong("endDate");
+        long _et = et; // keep track of the original end time, needed for basal calories
+        if (!args.getJSONObject(0).has("dataType")) {
+            callbackContext.error("Missing argument dataType");
+            return;
+        }
+        String datatype = args.getJSONObject(0).getString("dataType");
 
-/**
- * Read gender data
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)readGender:(CDVInvokedUrlCommand *)command {
-    HKCharacteristicType *genderType = [HKObjectType characteristicTypeForIdentifier:HKCharacteristicTypeIdentifierBiologicalSex];
-    [[HealthKit sharedHealthStore] requestAuthorizationToShareTypes:nil readTypes:[NSSet setWithObjects:genderType, nil] completion:^(BOOL success, NSError *error) {
-        __block HealthKit *bSelf = self;
-        if (success) {
-            HKBiologicalSexObject *sex = [[HealthKit sharedHealthStore] biologicalSexWithError:&error];
-            if (sex != nil) {
-
-                NSString *gender = nil;
-                switch (sex.biologicalSex) {
-                    case HKBiologicalSexMale:
-                        gender = @"male";
-                        break;
-                    case HKBiologicalSexFemale:
-                        gender = @"female";
-                        break;
-                    case HKBiologicalSexOther:
-                        gender = @"other";
-                        break;
-                    default:
-                        gender = @"unknown";
+        boolean hasbucket = args.getJSONObject(0).has("bucket");
+        boolean customBuckets = false;
+        String bucketType = "";
+        if (hasbucket) {
+            bucketType = args.getJSONObject(0).getString("bucket");
+            if (!bucketType.equalsIgnoreCase("hour") && !bucketType.equalsIgnoreCase("day")) {
+                customBuckets = true;
+                if (!bucketType.equalsIgnoreCase("week") && !bucketType.equalsIgnoreCase("month") && !bucketType.equalsIgnoreCase("year")) {
+                    // error
+                    callbackContext.error("Bucket type " + bucketType + " not recognised");
+                    return;
                 }
+            }
+            // Google fit bucketing is different and start and end must be quantised
+            Calendar c = Calendar.getInstance();
 
-                CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:gender];
-                [bSelf.commandDelegate sendPluginResult:result callbackId:command.callbackId];
+            c.setTimeInMillis(st);
+            c.clear(Calendar.MINUTE);
+            c.clear(Calendar.SECOND);
+            c.clear(Calendar.MILLISECOND);
+            if (!bucketType.equalsIgnoreCase("hour")) {
+                c.set(Calendar.HOUR_OF_DAY, 0);
+                if (bucketType.equalsIgnoreCase("week")) {
+                    c.set(Calendar.DAY_OF_WEEK, c.getFirstDayOfWeek());
+                } else if (bucketType.equalsIgnoreCase("month")) {
+                    c.set(Calendar.DAY_OF_MONTH, 1);
+                } else if (bucketType.equalsIgnoreCase("year")) {
+                    c.set(Calendar.DAY_OF_YEAR, 1);
+                }
+            }
+            st = c.getTimeInMillis();
+
+            c.setTimeInMillis(et);
+            c.clear(Calendar.MINUTE);
+            c.clear(Calendar.SECOND);
+            c.clear(Calendar.MILLISECOND);
+            if (bucketType.equalsIgnoreCase("hour")) {
+                c.add(Calendar.HOUR_OF_DAY, 1);
             } else {
-                [HealthKit triggerErrorCallbackWithMessage:error.localizedDescription command:command delegate:bSelf.commandDelegate];
+                c.set(Calendar.HOUR_OF_DAY, 0);
+                if (bucketType.equalsIgnoreCase("day")) {
+                    c.add(Calendar.DAY_OF_YEAR, 1);
+                } else if (bucketType.equalsIgnoreCase("week")) {
+                    c.add(Calendar.DAY_OF_YEAR, 7);
+                } else if (bucketType.equalsIgnoreCase("month")) {
+                    c.add(Calendar.MONTH, 1);
+                } else if (bucketType.equalsIgnoreCase("year")) {
+                    c.add(Calendar.YEAR, 1);
+                }
+            }
+            et = c.getTimeInMillis();
+        }
+
+        if ((mClient == null) || (!mClient.isConnected())) {
+            if (!lightConnect()) {
+                callbackContext.error("Cannot connect to Google Fit");
+                return;
             }
         }
-    }];
-}
 
-/**
- * Read Fitzpatrick Skin Type Data
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)readFitzpatrickSkinType:(CDVInvokedUrlCommand *)command {
-    // fp skintype is available since iOS 9, so we need to check it
-    if (![[HealthKit sharedHealthStore] respondsToSelector:@selector(fitzpatrickSkinTypeWithError:)]) {
-        CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"not available on this device"];
-        [self.commandDelegate sendPluginResult:result callbackId:command.callbackId];
-        return;
-    }
+        // basal metabolic rate is treated in a different way
+        // we need to query per day and not all days may have a sample
+        // so we query over a week then we take the average
+        float basalAVG = 0;
+        if (datatype.equalsIgnoreCase("calories.basal")) {
+            try {
+                basalAVG = getBasalAVG(_et);
+            } catch (Exception ex) {
+                callbackContext.error(ex.getMessage());
+                return;
+            }
+        }
 
-    HKCharacteristicType *type = [HKObjectType characteristicTypeForIdentifier:HKCharacteristicTypeIdentifierFitzpatrickSkinType];
-    [[HealthKit sharedHealthStore] requestAuthorizationToShareTypes:nil readTypes:[NSSet setWithObjects:type, nil] completion:^(BOOL success, NSError *error) {
-        __block HealthKit *bSelf = self;
-        if (success) {
-            HKFitzpatrickSkinTypeObject *skinType = [[HealthKit sharedHealthStore] fitzpatrickSkinTypeWithError:&error];
-            if (skinType != nil) {
 
-                NSString *skin = nil;
-                switch (skinType.skinType) {
-                    case HKFitzpatrickSkinTypeI:
-                        skin = @"I";
-                        break;
-                    case HKFitzpatrickSkinTypeII:
-                        skin = @"II";
-                        break;
-                    case HKFitzpatrickSkinTypeIII:
-                        skin = @"III";
-                        break;
-                    case HKFitzpatrickSkinTypeIV:
-                        skin = @"IV";
-                        break;
-                    case HKFitzpatrickSkinTypeV:
-                        skin = @"V";
-                        break;
-                    case HKFitzpatrickSkinTypeVI:
-                        skin = @"VI";
-                        break;
-                    default:
-                        skin = @"unknown";
-                }
+        DataReadRequest.Builder builder = new DataReadRequest.Builder();
+        builder.setTimeRange(st, et, TimeUnit.MILLISECONDS);
+        int allms = (int) (et - st);
 
-                CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:skin];
-                [bSelf.commandDelegate sendPluginResult:result callbackId:command.callbackId];
+        if (datatype.equalsIgnoreCase("steps")) {
+            if (args.getJSONObject(0).has("filtered") && args.getJSONObject(0).getBoolean("filtered")) {
+                // exceptional case for filtered steps
+                DataSource filteredStepsSource = new DataSource.Builder()
+                        .setDataType(DataType.TYPE_STEP_COUNT_DELTA)
+                        .setType(DataSource.TYPE_DERIVED)
+                        .setStreamName("estimated_steps")
+                        .setAppPackageName("com.google.android.gms")
+                        .build();
+                builder.aggregate(filteredStepsSource, DataType.AGGREGATE_STEP_COUNT_DELTA);
             } else {
-                [HealthKit triggerErrorCallbackWithMessage:error.localizedDescription command:command delegate:bSelf.commandDelegate];
+                builder.aggregate(DataType.TYPE_STEP_COUNT_DELTA, DataType.AGGREGATE_STEP_COUNT_DELTA);
             }
+        } else if (datatype.equalsIgnoreCase("distance")) {
+            builder.aggregate(DataType.TYPE_DISTANCE_DELTA, DataType.AGGREGATE_DISTANCE_DELTA);
+        } else if (datatype.equalsIgnoreCase("calories")) {
+            builder.aggregate(DataType.TYPE_CALORIES_EXPENDED, DataType.AGGREGATE_CALORIES_EXPENDED);
+        } else if (datatype.equalsIgnoreCase("calories.basal")) {
+            builder.aggregate(DataType.TYPE_BASAL_METABOLIC_RATE, DataType.AGGREGATE_BASAL_METABOLIC_RATE_SUMMARY);
+        } else if (datatype.equalsIgnoreCase("activity")) {
+            builder.aggregate(DataType.TYPE_ACTIVITY_SEGMENT, DataType.AGGREGATE_ACTIVITY_SUMMARY);
+        } else if (datatype.equalsIgnoreCase("nutrition.water")) {
+            builder.aggregate(DataType.TYPE_HYDRATION, DataType.AGGREGATE_HYDRATION);
+        } else if (nutritiondatatypes.get(datatype) != null) {
+            builder.aggregate(DataType.TYPE_NUTRITION, DataType.AGGREGATE_NUTRITION_SUMMARY);
+        } else {
+            callbackContext.error("Datatype " + datatype + " not supported");
+            return;
         }
-    }];
-}
 
-/**
- * Read blood type data
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)readBloodType:(CDVInvokedUrlCommand *)command {
-    HKCharacteristicType *bloodType = [HKObjectType characteristicTypeForIdentifier:HKCharacteristicTypeIdentifierBloodType];
-    [[HealthKit sharedHealthStore] requestAuthorizationToShareTypes:nil readTypes:[NSSet setWithObjects:bloodType, nil] completion:^(BOOL success, NSError *error) {
-        __block HealthKit *bSelf = self;
-        if (success) {
-            HKBloodTypeObject *innerBloodType = [[HealthKit sharedHealthStore] bloodTypeWithError:&error];
-            if (innerBloodType != nil) {
-                NSString *bt = nil;
-
-                switch (innerBloodType.bloodType) {
-                    case HKBloodTypeAPositive:
-                        bt = @"A+";
-                        break;
-                    case HKBloodTypeANegative:
-                        bt = @"A-";
-                        break;
-                    case HKBloodTypeBPositive:
-                        bt = @"B+";
-                        break;
-                    case HKBloodTypeBNegative:
-                        bt = @"B-";
-                        break;
-                    case HKBloodTypeABPositive:
-                        bt = @"AB+";
-                        break;
-                    case HKBloodTypeABNegative:
-                        bt = @"AB-";
-                        break;
-                    case HKBloodTypeOPositive:
-                        bt = @"O+";
-                        break;
-                    case HKBloodTypeONegative:
-                        bt = @"O-";
-                        break;
-                    default:
-                        bt = @"unknown";
-                }
-
-                CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:bt];
-                [bSelf.commandDelegate sendPluginResult:result callbackId:command.callbackId];
+        if (hasbucket) {
+            if (bucketType.equalsIgnoreCase("hour")) {
+                builder.bucketByTime(1, TimeUnit.HOURS);
+            } else if (bucketType.equalsIgnoreCase("day")) {
+                builder.bucketByTime(1, TimeUnit.DAYS);
             } else {
-                [HealthKit triggerErrorCallbackWithMessage:error.localizedDescription command:command delegate:bSelf.commandDelegate];
+                // use days, then will need to aggregate manually
+                builder.bucketByTime(1, TimeUnit.DAYS);
             }
-        }
-    }];
-}
-
-/**
- * Read date of birth data
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)readDateOfBirth:(CDVInvokedUrlCommand *)command {
-    HKCharacteristicType *birthdayType = [HKObjectType characteristicTypeForIdentifier:HKCharacteristicTypeIdentifierDateOfBirth];
-    [[HealthKit sharedHealthStore] requestAuthorizationToShareTypes:nil readTypes:[NSSet setWithObjects:birthdayType, nil] completion:^(BOOL success, NSError *error) {
-        __block HealthKit *bSelf = self;
-        if (success) {
-            NSDate *dateOfBirth = [[HealthKit sharedHealthStore] dateOfBirthWithError:&error];
-            if (dateOfBirth) {
-                CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:[HealthKit stringFromDate:dateOfBirth]];
-                [bSelf.commandDelegate sendPluginResult:result callbackId:command.callbackId];
+        } else {
+            if (datatype.equalsIgnoreCase("activity")) {
+                builder.bucketByActivityType(1, TimeUnit.MILLISECONDS);
             } else {
-                [HealthKit triggerErrorCallbackWithMessage:error.localizedDescription command:command delegate:bSelf.commandDelegate];
+                builder.bucketByTime(allms, TimeUnit.MILLISECONDS);
             }
         }
-    }];
-}
 
-/**
- * Monitor a specified sample type
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)monitorSampleType:(CDVInvokedUrlCommand *)command {
-    NSDictionary *args = command.arguments[0];
-    NSString *sampleTypeString = args[HKPluginKeySampleType];
-    HKSampleType *type = [HealthKit getHKSampleType:sampleTypeString];
-    HKUpdateFrequency updateFrequency = HKUpdateFrequencyImmediate;
-    if (type == nil) {
-        [HealthKit triggerErrorCallbackWithMessage:@"sampleType was invalid" command:command delegate:self.commandDelegate];
-        return;
-    }
+        DataReadRequest readRequest = builder.build();
+        DataReadResult dataReadResult = Fitness.HistoryApi.readData(mClient, readRequest).await();
 
-    // TODO use this an an anchor for an achored query
-    //__block int *anchor = 0;
-#ifdef HKPLUGIN_DEBUG
-    NSLog(@"Setting up ObserverQuery");
-#endif
-
-    HKObserverQuery *query;
-    query = [[HKObserverQuery alloc] initWithSampleType:type
-                                              predicate:nil
-                                          updateHandler:^(HKObserverQuery *observerQuery,
-                                                  HKObserverQueryCompletionHandler handler,
-                                                  NSError *error) {
-                                              __block HealthKit *bSelf = self;
-                                              if (error) {
-                                                  handler();
-                                                  dispatch_sync(dispatch_get_main_queue(), ^{
-                                                      [HealthKit triggerErrorCallbackWithMessage:error.localizedDescription command:command delegate:bSelf.commandDelegate];
-                                                  });
-                                              } else {
-                                                  handler();
-#ifdef HKPLUGIN_DEBUG
-                                                  NSLog(@"HealthKit plugin received a monitorSampleType, passing it to JS.");
-#endif
-                                                  // TODO using a anchored qery to return the new and updated values.
-                                                  // Until then use querySampleType({limit=1, ascending="T", endDate=new Date()}) to return the last result
-
-                                                  // Issue #47: commented this block since it resulted in callbacks not being delivered while the app was in the background
-                                                  //dispatch_sync(dispatch_get_main_queue(), ^{
-                                                  CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:sampleTypeString];
-                                                  [result setKeepCallbackAsBool:YES];
-                                                  [bSelf.commandDelegate sendPluginResult:result callbackId:command.callbackId];
-                                                  //});
-                                              }
-                                          }];
-
-    // Make sure we get the updated immediately
-    [[HealthKit sharedHealthStore] enableBackgroundDeliveryForType:type frequency:updateFrequency withCompletion:^(BOOL success, NSError *error) {
-#ifdef HKPLUGIN_DEBUG
-        if (success) {
-            NSLog(@"Background devliery enabled %@", sampleTypeString);
-        } else {
-            NSLog(@"Background delivery not enabled for %@ because of %@", sampleTypeString, error);
-        }
-        NSLog(@"Executing ObserverQuery");
-#endif
-        [[HealthKit sharedHealthStore] executeQuery:query];
-        // TODO provide some kind of callback to stop monitoring this value, store the query in some kind of WeakHashSet equilavent?
-    }];
-};
-
-/**
- * Get the sum of a specified quantity type
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)sumQuantityType:(CDVInvokedUrlCommand *)command {
-    NSDictionary *args = command.arguments[0];
-
-    NSDate *startDate = [NSDate dateWithTimeIntervalSince1970:[args[HKPluginKeyStartDate] longValue]];
-    NSDate *endDate = [NSDate dateWithTimeIntervalSince1970:[args[HKPluginKeyEndDate] longValue]];
-    NSString *sampleTypeString = args[HKPluginKeySampleType];
-    NSString *unitString = args[HKPluginKeyUnit];
-    HKQuantityType *type = [HKObjectType quantityTypeForIdentifier:sampleTypeString];
-
-
-    if (type == nil) {
-        [HealthKit triggerErrorCallbackWithMessage:@"sampleType was invalid" command:command delegate:self.commandDelegate];
-        return;
-    }
-
-    NSPredicate *predicate = [HKQuery predicateForSamplesWithStartDate:startDate endDate:endDate options:HKQueryOptionStrictStartDate];
-    HKStatisticsOptions sumOptions = HKStatisticsOptionCumulativeSum;
-    HKStatisticsQuery *query;
-    HKUnit *unit = ((unitString != nil) ? [HKUnit unitFromString:unitString] : [HKUnit countUnit]);
-    query = [[HKStatisticsQuery alloc] initWithQuantityType:type
-                                    quantitySamplePredicate:predicate
-                                                    options:sumOptions
-                                          completionHandler:^(HKStatisticsQuery *statisticsQuery,
-                                                  HKStatistics *result,
-                                                  NSError *error) {
-                                              HKQuantity *sum = [result sumQuantity];
-                                              CDVPluginResult *response = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDouble:[sum doubleValueForUnit:unit]];
-                                              [self.commandDelegate sendPluginResult:response callbackId:command.callbackId];
-                                          }];
-
-    [[HealthKit sharedHealthStore] executeQuery:query];
-}
-
-/**
- * Query a specified sample type
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)querySampleType:(CDVInvokedUrlCommand *)command {
-    NSDictionary *args = command.arguments[0];
-    NSDate *startDate = [NSDate dateWithTimeIntervalSince1970:[args[HKPluginKeyStartDate] longValue]];
-    NSDate *endDate = [NSDate dateWithTimeIntervalSince1970:[args[HKPluginKeyEndDate] longValue]];
-    NSString *sampleTypeString = args[HKPluginKeySampleType];
-    NSString *unitString = args[HKPluginKeyUnit];
-    NSUInteger limit = ((args[@"limit"] != nil) ? [args[@"limit"] unsignedIntegerValue] : 1000);
-    BOOL ascending = (args[@"ascending"] != nil && [args[@"ascending"] boolValue]);
-
-    HKSampleType *type = [HealthKit getHKSampleType:sampleTypeString];
-    if (type == nil) {
-        [HealthKit triggerErrorCallbackWithMessage:@"sampleType was invalid" command:command delegate:self.commandDelegate];
-        return;
-    }
-    HKUnit *unit = nil;
-    if (unitString != nil) {
-        if ([unitString isEqualToString:@"mmol/L"]) {
-            // @see https://stackoverflow.com/a/30196642/1214598
-            unit = [[HKUnit moleUnitWithMetricPrefix:HKMetricPrefixMilli molarMass:HKUnitMolarMassBloodGlucose] unitDividedByUnit:[HKUnit literUnit]];
-        } else {
-            // issue 51
-            // @see https://github.com/Telerik-Verified-Plugins/HealthKit/issues/51
-            if ([unitString isEqualToString:@"percent"]) {
-                unitString = @"%";
+        if (dataReadResult.getStatus().isSuccess()) {
+            JSONObject retBucket = null;
+            JSONArray retBucketsArr = new JSONArray();
+            if (hasbucket) {
+                if (customBuckets) {
+                    // create custom buckets, as these are not supported by Google Fit
+                    Calendar cal = Calendar.getInstance();
+                    cal.setTimeInMillis(st);
+                    while (cal.getTimeInMillis() < et) {
+                        JSONObject customBuck = new JSONObject();
+                        customBuck.put("startDate", cal.getTimeInMillis());
+                        if (bucketType.equalsIgnoreCase("week")) {
+                            cal.add(Calendar.DAY_OF_YEAR, 7);
+                        } else if (bucketType.equalsIgnoreCase("month")) {
+                            cal.add(Calendar.MONTH, 1);
+                        } else {
+                            cal.add(Calendar.YEAR, 1);
+                        }
+                        customBuck.put("endDate", cal.getTimeInMillis());
+                        retBucketsArr.put(customBuck);
+                    }
+                }
+            } else {
+                //there will be only one bucket spanning all the period
+                retBucket = new JSONObject();
+                retBucket.put("startDate", st);
+                retBucket.put("endDate", et);
+                retBucket.put("value", 0);
+                if (datatype.equalsIgnoreCase("steps")) {
+                    retBucket.put("unit", "count");
+                } else if (datatype.equalsIgnoreCase("distance")) {
+                    retBucket.put("unit", "m");
+                } else if (datatype.equalsIgnoreCase("calories")) {
+                    retBucket.put("unit", "kcal");
+                } else if (datatype.equalsIgnoreCase("activity")) {
+                    retBucket.put("unit", "activitySummary");
+                    // query per bucket time to get distance and calories per activity
+                    JSONObject actobj = getAggregatedActivityDistanceCalories(st, et);
+                    retBucket.put("value", actobj);
+                } else if (datatype.equalsIgnoreCase("nutrition.water")) {
+                    retBucket.put("unit", "ml");
+                } else if (datatype.equalsIgnoreCase("nutrition")) {
+                    retBucket.put("value", new JSONObject());
+                    retBucket.put("unit", "nutrition");
+                } else if (nutritiondatatypes.get(datatype) != null) {
+                    retBucket.put("unit", nutrientFields.get(datatype).unit);
+                }
             }
-            unit = [HKUnit unitFromString:unitString];
-        }
-    }
-    // TODO check that unit is compatible with sampleType if sample type of HKQuantityType
-    NSPredicate *predicate = [HKQuery predicateForSamplesWithStartDate:startDate endDate:endDate options:HKQueryOptionStrictStartDate];
 
-    NSSet *requestTypes = [NSSet setWithObjects:type, nil];
-    [[HealthKit sharedHealthStore] requestAuthorizationToShareTypes:nil readTypes:requestTypes completion:^(BOOL success, NSError *error) {
-        __block HealthKit *bSelf = self;
-        if (success) {
-            NSString *endKey = HKSampleSortIdentifierEndDate;
-            NSSortDescriptor *endDateSort = [NSSortDescriptor sortDescriptorWithKey:endKey ascending:ascending];
-            HKSampleQuery *query = [[HKSampleQuery alloc] initWithSampleType:type
-                                                                   predicate:predicate
-                                                                       limit:limit
-                                                             sortDescriptors:@[endDateSort]
-                                                              resultsHandler:^(HKSampleQuery *sampleQuery,
-                                                                      NSArray *results,
-                                                                      NSError *innerError) {
-                                                                  if (innerError != nil) {
-                                                                      dispatch_sync(dispatch_get_main_queue(), ^{
-                                                                          [HealthKit triggerErrorCallbackWithMessage:innerError.localizedDescription command:command delegate:bSelf.commandDelegate];
-                                                                      });
-                                                                  } else {
-                                                                      NSMutableArray *finalResults = [[NSMutableArray alloc] initWithCapacity:results.count];
+            for (Bucket bucket : dataReadResult.getBuckets()) {
 
-                                                                      for (HKSample *sample in results) {
-
-                                                                          NSDate *startSample = sample.startDate;
-                                                                          NSDate *endSample = sample.endDate;
-                                                                          NSMutableDictionary *entry = [NSMutableDictionary dictionary];
-
-                                                                          // common indices
-                                                                          entry[HKPluginKeyStartDate] =[HealthKit stringFromDate:startSample];
-                                                                          entry[HKPluginKeyEndDate] = [HealthKit stringFromDate:endSample];
-                                                                          entry[HKPluginKeyUUID] = sample.UUID.UUIDString;
-
-                                                                          //@TODO Update deprecated API calls
-                                                                          entry[HKPluginKeySourceName] = sample.source.name;
-                                                                          entry[HKPluginKeySourceBundleId] = sample.source.bundleIdentifier;
-
-                                                                          if (sample.metadata == nil || ![NSJSONSerialization isValidJSONObject:sample.metadata]) {
-                                                                              entry[HKPluginKeyMetadata] = @{};
-                                                                          } else {
-                                                                              entry[HKPluginKeyMetadata] = sample.metadata;
-                                                                          }
-
-                                                                          // case-specific indices
-                                                                          if ([sample isKindOfClass:[HKCategorySample class]]) {
-
-                                                                              HKCategorySample *csample = (HKCategorySample *) sample;
-                                                                              entry[HKPluginKeyValue] = @(csample.value);
-                                                                              entry[@"categoryType.identifier"] = csample.categoryType.identifier;
-                                                                              entry[@"categoryType.description"] = csample.categoryType.description;
-
-                                                                          } else if ([sample isKindOfClass:[HKCorrelationType class]]) {
-
-                                                                              HKCorrelation *correlation = (HKCorrelation *) sample;
-                                                                              entry[HKPluginKeyCorrelationType] = correlation.correlationType.identifier;
-
-                                                                          } else if ([sample isKindOfClass:[HKQuantitySample class]]) {
-
-                                                                              HKQuantitySample *qsample = (HKQuantitySample *) sample;
-                                                                              [entry setValue:@([qsample.quantity doubleValueForUnit:unit]) forKey:@"quantity"];
-
-                                                                          } else if ([sample isKindOfClass:[HKWorkout class]]) {
-
-                                                                              HKWorkout *wsample = (HKWorkout *) sample;
-                                                                              [entry setValue:@(wsample.duration) forKey:@"duration"];
-
-                                                                          }
-
-                                                                          [finalResults addObject:entry];
-                                                                      }
-
-                                                                      dispatch_sync(dispatch_get_main_queue(), ^{
-                                                                          CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsArray:finalResults];
-                                                                          [self.commandDelegate sendPluginResult:result callbackId:command.callbackId];
-                                                                      });
-                                                                  }
-                                                              }];
-
-            [[HealthKit sharedHealthStore] executeQuery:query];
-        } else {
-            dispatch_sync(dispatch_get_main_queue(), ^{
-                [HealthKit triggerErrorCallbackWithMessage:error.localizedDescription command:command delegate:bSelf.commandDelegate];
-            });
-        }
-    }];
-}
-
-/**
- * Query a specified sample type using an aggregation
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)querySampleTypeAggregated:(CDVInvokedUrlCommand *)command {
-    NSDictionary *args = command.arguments[0];
-    NSDate *startDate = [NSDate dateWithTimeIntervalSince1970:[args[HKPluginKeyStartDate] longValue]];
-    NSDate *endDate = [NSDate dateWithTimeIntervalSince1970:[args[HKPluginKeyEndDate] longValue]];
-
-    NSString *sampleTypeString = args[HKPluginKeySampleType];
-    NSString *unitString = args[HKPluginKeyUnit];
-
-    NSCalendar *calendar = [NSCalendar currentCalendar];
-    NSDateComponents *interval = [[NSDateComponents alloc] init];
-
-    NSString *aggregation = args[HKPluginKeyAggregation];
-    // TODO would be nice to also have the dev pass in the nr of hours/days/..
-    if ([@"hour" isEqualToString:aggregation]) {
-        interval.hour = 1;
-    } else if ([@"week" isEqualToString:aggregation]) {
-        interval.day = 7;
-    } else if ([@"month" isEqualToString:aggregation]) {
-        interval.month = 1;
-    } else if ([@"year" isEqualToString:aggregation]) {
-        interval.year = 1;
-    } else {
-        // default 'day'
-        interval.day = 1;
-    }
-
-    NSDateComponents *anchorComponents = [calendar components:NSCalendarUnitDay | NSCalendarUnitMonth | NSCalendarUnitYear
-                                                     fromDate:endDate]; //[NSDate date]];
-    anchorComponents.hour = 0; //at 00:00 AM
-    NSDate *anchorDate = [calendar dateFromComponents:anchorComponents];
-    HKQuantityType *quantityType = [HKObjectType quantityTypeForIdentifier:sampleTypeString];
-
-    HKStatisticsOptions statOpt = HKStatisticsOptionNone;
-
-    if (quantityType == nil) {
-        [HealthKit triggerErrorCallbackWithMessage:@"sampleType is invalid" command:command delegate:self.commandDelegate];
-        return;
-    } else if ([sampleTypeString isEqualToString:@"HKQuantityTypeIdentifierHeartRate"]) {
-        statOpt = HKStatisticsOptionDiscreteAverage;
-
-    } else { //HKQuantityTypeIdentifierStepCount, etc...
-        statOpt = HKStatisticsOptionCumulativeSum;
-    }
-
-    HKUnit *unit = nil;
-    if (unitString != nil) {
-        // issue 51
-        // @see https://github.com/Telerik-Verified-Plugins/HealthKit/issues/51
-        if ([unitString isEqualToString:@"percent"]) {
-            unitString = @"%";
-        }
-        unit = [HKUnit unitFromString:unitString];
-    }
-
-    HKSampleType *type = [HealthKit getHKSampleType:sampleTypeString];
-    if (type == nil) {
-        [HealthKit triggerErrorCallbackWithMessage:@"sampleType is invalid" command:command delegate:self.commandDelegate];
-        return;
-    }
-
-    // NSPredicate *predicate = [HKQuery predicateForSamplesWithStartDate:startDate endDate:endDate options:HKQueryOptionStrictStartDate];
-    NSPredicate *predicate = nil;
-    
-    BOOL filtered = (args[@"filtered"] != nil && [args[@"filtered"] boolValue]);
-    if (filtered) {
-        predicate = [NSPredicate predicateWithFormat:@"metadata.%K != YES", HKMetadataKeyWasUserEntered];
-    }
-
-    NSSet *requestTypes = [NSSet setWithObjects:type, nil];
-    [[HealthKit sharedHealthStore] requestAuthorizationToShareTypes:nil readTypes:requestTypes completion:^(BOOL success, NSError *error) {
-        __block HealthKit *bSelf = self;
-        if (success) {
-            HKStatisticsCollectionQuery *query = [[HKStatisticsCollectionQuery alloc] initWithQuantityType:quantityType
-                                                                                   quantitySamplePredicate:predicate
-                                                                                                   options:statOpt
-                                                                                                anchorDate:anchorDate
-                                                                                        intervalComponents:interval];
-
-            // Set the results handler
-            query.initialResultsHandler = ^(HKStatisticsCollectionQuery *statisticsCollectionQuery, HKStatisticsCollection *results, NSError *innerError) {
-                if (innerError) {
-                    // Perform proper error handling here
-                    //                    NSLog(@"*** An error occurred while calculating the statistics: %@ ***",error.localizedDescription);
-                    dispatch_sync(dispatch_get_main_queue(), ^{
-                        [HealthKit triggerErrorCallbackWithMessage:innerError.localizedDescription command:command delegate:bSelf.commandDelegate];
-                    });
-                } else {
-                    // Get the daily steps over the past n days
-                    //            HKUnit *unit = unitString!=nil ? [HKUnit unitFromString:unitString] : [HKUnit countUnit];
-                    NSMutableArray *finalResults = [[NSMutableArray alloc] initWithCapacity:[[results statistics] count]];
-
-                    [results enumerateStatisticsFromDate:startDate
-                                                  toDate:endDate
-                                               withBlock:^(HKStatistics *result, BOOL *stop) {
-
-                                                   NSDate *valueStartDate = result.startDate;
-                                                   NSDate *valueEndDate = result.endDate;
-
-                                                   NSMutableDictionary *entry = [NSMutableDictionary dictionary];
-                                                   entry[HKPluginKeyStartDate] = [HealthKit stringFromDate:valueStartDate];
-                                                   entry[HKPluginKeyEndDate] = [HealthKit stringFromDate:valueEndDate];
-
-                                                   HKQuantity *quantity = nil;
-                                                   switch (statOpt) {
-                                                       case HKStatisticsOptionDiscreteAverage:
-                                                           quantity = result.averageQuantity;
-                                                           break;
-                                                       case HKStatisticsOptionCumulativeSum:
-                                                           quantity = result.sumQuantity;
-                                                           break;
-                                                       case HKStatisticsOptionDiscreteMin:
-                                                           quantity = result.minimumQuantity;
-                                                           break;
-                                                       case HKStatisticsOptionDiscreteMax:
-                                                           quantity = result.maximumQuantity;
-                                                           break;
-
-                                                           // @TODO return appropriate values here
-                                                       case HKStatisticsOptionSeparateBySource:
-                                                       case HKStatisticsOptionNone:
-                                                       default:
-                                                           break;
-                                                   }
-
-                                                   double value = [quantity doubleValueForUnit:unit];
-                                                   entry[@"quantity"] = @(value);
-                                                   [finalResults addObject:entry];
-                                               }];
-
-                    dispatch_sync(dispatch_get_main_queue(), ^{
-                        CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsArray:finalResults];
-                        [bSelf.commandDelegate sendPluginResult:result callbackId:command.callbackId];
-                    });
-                }
-            };
-
-            [[HealthKit sharedHealthStore] executeQuery:query];
-
-        } else {
-            dispatch_sync(dispatch_get_main_queue(), ^{
-                [HealthKit triggerErrorCallbackWithMessage:error.localizedDescription command:command delegate:bSelf.commandDelegate];
-            });
-        }
-    }];
-
-
-}
-
-/**
- * Query a specified correlation type
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)queryCorrelationType:(CDVInvokedUrlCommand *)command {
-    NSDictionary *args = command.arguments[0];
-    NSDate *startDate = [NSDate dateWithTimeIntervalSince1970:[args[HKPluginKeyStartDate] longValue]];
-    NSDate *endDate = [NSDate dateWithTimeIntervalSince1970:[args[HKPluginKeyEndDate] longValue]];
-    NSString *correlationTypeString = args[HKPluginKeyCorrelationType];
-    NSArray<NSString *> *unitsString = args[HKPluginKeyUnits];
-
-    HKCorrelationType *type = (HKCorrelationType *) [HealthKit getHKSampleType:correlationTypeString];
-    if (type == nil) {
-        [HealthKit triggerErrorCallbackWithMessage:@"sampleType is invalid" command:command delegate:self.commandDelegate];
-        return;
-    }
-    NSMutableArray *units = [[NSMutableArray alloc] init];
-    for (NSString *unitString in unitsString) {
-        HKUnit *unit = ((unitString != nil) ? [HKUnit unitFromString:unitString] : nil);
-        [units addObject:unit];
-    }
-
-    // TODO check that unit is compatible with sampleType if sample type of HKQuantityType
-    NSPredicate *predicate = [HKQuery predicateForSamplesWithStartDate:startDate endDate:endDate options:HKQueryOptionStrictStartDate];
-
-    HKCorrelationQuery *query = [[HKCorrelationQuery alloc] initWithType:type predicate:predicate samplePredicates:nil completion:^(HKCorrelationQuery *correlationQuery, NSArray *correlations, NSError *error) {
-        __block HealthKit *bSelf = self;
-        if (error) {
-            dispatch_sync(dispatch_get_main_queue(), ^{
-                [HealthKit triggerErrorCallbackWithMessage:error.localizedDescription command:command delegate:bSelf.commandDelegate];
-            });
-        } else {
-            NSMutableArray *finalResults = [[NSMutableArray alloc] initWithCapacity:correlations.count];
-            for (HKSample *sample in correlations) {
-                NSDate *startSample = sample.startDate;
-                NSDate *endSample = sample.endDate;
-
-                NSMutableDictionary *entry = [NSMutableDictionary dictionary];
-                entry[HKPluginKeyStartDate] = [HealthKit stringFromDate:startSample];
-                entry[HKPluginKeyEndDate] = [HealthKit stringFromDate:endSample];
-
-                // common indices
-                entry[HKPluginKeyUUID] = sample.UUID.UUIDString;
-                entry[HKPluginKeySourceName] = sample.source.name;
-                entry[HKPluginKeySourceBundleId] = sample.source.bundleIdentifier;
-                if (sample.metadata == nil || ![NSJSONSerialization isValidJSONObject:sample.metadata]) {
-                    entry[HKPluginKeyMetadata] = @{};
-                } else {
-                    entry[HKPluginKeyMetadata] = sample.metadata;
-                }
-
-
-                if ([sample isKindOfClass:[HKCategorySample class]]) {
-
-                    HKCategorySample *csample = (HKCategorySample *) sample;
-                    entry[HKPluginKeyValue] = @(csample.value);
-                    entry[@"categoryType.identifier"] = csample.categoryType.identifier;
-                    entry[@"categoryType.description"] = csample.categoryType.description;
-
-                } else if ([sample isKindOfClass:[HKCorrelation class]]) {
-
-                    HKCorrelation *correlation = (HKCorrelation *) sample;
-                    entry[HKPluginKeyCorrelationType] = correlation.correlationType.identifier;
-
-                    NSMutableArray *samples = [NSMutableArray arrayWithCapacity:correlation.objects.count];
-                    for (HKQuantitySample *quantitySample in correlation.objects) {
-                        for (int i=0; i<[units count]; i++) {
-                            HKUnit *unit = units[i];
-                            NSString *unitS = unitsString[i];
-                            if ([quantitySample.quantity isCompatibleWithUnit:unit]) {
-                                [samples addObject:@{
-                                                     HKPluginKeyStartDate: [HealthKit stringFromDate:quantitySample.startDate],
-                                                     HKPluginKeyEndDate: [HealthKit stringFromDate:quantitySample.endDate],
-                                                     HKPluginKeySampleType: quantitySample.sampleType.identifier,
-                                                     HKPluginKeyValue: @([quantitySample.quantity doubleValueForUnit:unit]),
-                                                     HKPluginKeyUnit: unitS,
-                                                     HKPluginKeyMetadata: (quantitySample.metadata == nil || ![NSJSONSerialization isValidJSONObject:quantitySample.metadata]) ? @{} : quantitySample.metadata,
-                                                     HKPluginKeyUUID: quantitySample.UUID.UUIDString
-                                                     }
-                                 ];
+                if (hasbucket) {
+                    if (customBuckets) {
+                        //find the bucket among customs
+                        for (int i = 0; i < retBucketsArr.length(); i++) {
+                            retBucket = retBucketsArr.getJSONObject(i);
+                            long bst = retBucket.getLong("startDate");
+                            long bet = retBucket.getLong("endDate");
+                            if (bucket.getStartTime(TimeUnit.MILLISECONDS) >= bst
+                                    && bucket.getEndTime(TimeUnit.MILLISECONDS) <= bet) {
                                 break;
                             }
                         }
+                    } else {
+                        //pick the current
+                        retBucket = new JSONObject();
+                        retBucket.put("startDate", bucket.getStartTime(TimeUnit.MILLISECONDS));
+                        retBucket.put("endDate", bucket.getEndTime(TimeUnit.MILLISECONDS));
+                        retBucketsArr.put(retBucket);
                     }
-                    entry[HKPluginKeyObjects] = samples;
-
-                } else if ([sample isKindOfClass:[HKQuantitySample class]]) {
-
-                    HKQuantitySample *qsample = (HKQuantitySample *) sample;
-                    for (int i=0; i<[units count]; i++) {
-                        HKUnit *unit = units[i];
-                        if ([qsample.quantity isCompatibleWithUnit:unit]) {
-                            double quantity = [qsample.quantity doubleValueForUnit:unit];
-                            entry[@"quantity"] = [NSString stringWithFormat:@"%f", quantity];
-                            break;
+                    if (!retBucket.has("value")) {
+                        retBucket.put("value", 0);
+                        if (datatype.equalsIgnoreCase("steps")) {
+                            retBucket.put("unit", "count");
+                        } else if (datatype.equalsIgnoreCase("distance")) {
+                            retBucket.put("unit", "m");
+                        } else if (datatype.equalsIgnoreCase("calories")) {
+                            retBucket.put("unit", "kcal");
+                        } else if (datatype.equalsIgnoreCase("activity")) {
+                            retBucket.put("unit", "activitySummary");
+                            // query per bucket time to get distance and calories per activity
+                            JSONObject actobj = getAggregatedActivityDistanceCalories(bucket.getStartTime(TimeUnit.MILLISECONDS), bucket.getEndTime(TimeUnit.MILLISECONDS));
+                            retBucket.put("value", actobj);
+                        } else if (datatype.equalsIgnoreCase("nutrition.water")) {
+                            retBucket.put("unit", "ml");
+                        } else if (datatype.equalsIgnoreCase("nutrition")) {
+                            retBucket.put("value", new JSONObject());
+                            retBucket.put("unit", "nutrition");
+                        } else if (nutritiondatatypes.get(datatype) != null) {
+                            NutrientFieldInfo fieldInfo = nutrientFields.get(datatype);
+                            if (fieldInfo != null) {
+                                retBucket.put("unit", fieldInfo.unit);
+                            }
                         }
                     }
-
-                } else if ([sample isKindOfClass:[HKWorkout class]]) {
-
-                    HKWorkout *wsample = (HKWorkout *) sample;
-                    entry[@"duration"] = @(wsample.duration);
-
-                } else if ([sample isKindOfClass:[HKCorrelationType class]]) {
-                    // TODO
-                    // wat do?
                 }
 
-                [finalResults addObject:entry];
+                // aggregate data points over the bucket
+                boolean atleastone = false;
+                for (DataSet dataset : bucket.getDataSets()) {
+                    for (DataPoint datapoint : dataset.getDataPoints()) {
+                        atleastone = true;
+                        if (datatype.equalsIgnoreCase("steps")) {
+                            int nsteps = datapoint.getValue(Field.FIELD_STEPS).asInt();
+                            int osteps = retBucket.getInt("value");
+                            retBucket.put("value", osteps + nsteps);
+                        } else if (datatype.equalsIgnoreCase("distance")) {
+                            float ndist = datapoint.getValue(Field.FIELD_DISTANCE).asFloat();
+                            double odist = retBucket.getDouble("value");
+                            retBucket.put("value", odist + ndist);
+                        } else if (datatype.equalsIgnoreCase("calories")) {
+                            float ncal = datapoint.getValue(Field.FIELD_CALORIES).asFloat();
+                            double ocal = retBucket.getDouble("value");
+                            retBucket.put("value", ocal + ncal);
+                        } else if (datatype.equalsIgnoreCase("calories.basal")) {
+                            float ncal = datapoint.getValue(Field.FIELD_AVERAGE).asFloat();
+                            double ocal = retBucket.getDouble("value");
+                            retBucket.put("value", ocal + ncal);
+                        } else if (datatype.equalsIgnoreCase("nutrition.water")) {
+                            float nwat = datapoint.getValue(Field.FIELD_VOLUME).asFloat();
+                            double owat = retBucket.getDouble("value");
+                            retBucket.put("value", owat + nwat);
+                        } else if (datatype.equalsIgnoreCase("nutrition")) {
+                            JSONObject nutrsob = retBucket.getJSONObject("value");
+                            if (datapoint.getValue(Field.FIELD_NUTRIENTS) != null) {
+                                nutrsob = getNutrients(datapoint.getValue(Field.FIELD_NUTRIENTS), nutrsob);
+                            }
+                            retBucket.put("value", nutrsob);
+                        } else if (nutritiondatatypes.get(datatype) != null) {
+                            Value nutrients = datapoint.getValue(Field.FIELD_NUTRIENTS);
+                            NutrientFieldInfo fieldInfo = nutrientFields.get(datatype);
+                            if (fieldInfo != null) {
+                                float value = nutrients.getKeyValue(fieldInfo.field);
+                                double total = retBucket.getDouble("value");
+                                retBucket.put("value", total + value);
+                            }
+                        } else if (datatype.equalsIgnoreCase("activity")) {
+                            String activity = datapoint.getValue(Field.FIELD_ACTIVITY).asActivity();
+                            int ndur = datapoint.getValue(Field.FIELD_DURATION).asInt();
+                            JSONObject actobj = retBucket.getJSONObject("value");
+                            JSONObject summary;
+                            if (actobj.has(activity)) {
+                                summary = actobj.getJSONObject(activity);
+                                int odur = summary.getInt("duration");
+                                summary.put("duration", odur + ndur);
+                            } else {
+                                summary = new JSONObject();
+                                summary.put("duration", ndur);
+                            }
+                            actobj.put(activity, summary);
+                            retBucket.put("value", actobj);
+                        }
+                    }
+                } //end of data set loop
+                if (datatype.equalsIgnoreCase("calories.basal")) {
+                    double basals = retBucket.getDouble("value");
+                    if (!atleastone) {
+                        //when no basal is available, use the daily average
+                        basals += basalAVG;
+                        retBucket.put("value", basals);
+                    }
+                    // if the bucket is not daily, it needs to be normalised
+                    if (!hasbucket || bucketType.equalsIgnoreCase("hour")) {
+                        long sst = retBucket.getLong("startDate");
+                        long eet = retBucket.getLong("endDate");
+                        basals = (basals / (24 * 60 * 60 * 1000)) * (eet - sst);
+                        retBucket.put("value", basals);
+                    }
+                }
+            } // end of buckets loop
+            if (hasbucket) callbackContext.success(retBucketsArr);
+            else callbackContext.success(retBucket);
+        } else {
+            callbackContext.error(dataReadResult.getStatus().getStatusMessage());
+        }
+    }
+
+    private JSONObject getAggregatedActivityDistanceCalories(long st, long et) throws JSONException {
+        JSONObject actobj = new JSONObject();
+
+        DataReadRequest readActivityDistCalRequest = new DataReadRequest.Builder()
+                .aggregate(DataType.TYPE_DISTANCE_DELTA, DataType.AGGREGATE_DISTANCE_DELTA)
+                .aggregate(DataType.TYPE_CALORIES_EXPENDED, DataType.AGGREGATE_CALORIES_EXPENDED)
+                .bucketByActivityType(1, TimeUnit.SECONDS)
+                .setTimeRange(st, et, TimeUnit.MILLISECONDS)
+                .build();
+
+        DataReadResult dataActivityDistCalReadResult = Fitness.HistoryApi.readData(mClient, readActivityDistCalRequest).await();
+
+        if (dataActivityDistCalReadResult.getStatus().isSuccess()) {
+            for (Bucket activityBucket : dataActivityDistCalReadResult.getBuckets()) {
+                //each bucket is an activity
+                float distance = 0;
+                float calories = 0;
+                String activity = activityBucket.getActivity();
+
+                DataSet distanceDataSet = activityBucket.getDataSet(DataType.AGGREGATE_DISTANCE_DELTA);
+                for (DataPoint datapoint : distanceDataSet.getDataPoints()) {
+                    distance += datapoint.getValue(Field.FIELD_DISTANCE).asFloat();
+                }
+
+                DataSet caloriesDataSet = activityBucket.getDataSet(DataType.AGGREGATE_CALORIES_EXPENDED);
+                for (DataPoint datapoint : caloriesDataSet.getDataPoints()) {
+                    calories += datapoint.getValue(Field.FIELD_CALORIES).asFloat();
+                }
+
+                JSONObject summary;
+                if (actobj.has(activity)) {
+                    summary = actobj.getJSONObject(activity);
+                    double existingdistance = summary.getDouble("distance");
+                    summary.put("distance", distance + existingdistance);
+                    double existingcalories = summary.getDouble("calories");
+                    summary.put("calories", calories + existingcalories);
+                } else {
+                    summary = new JSONObject();
+                    summary.put("duration", 0); // sum onto this whilst aggregating over buckets.
+                    summary.put("distance", distance);
+                    summary.put("calories", calories);
+                }
+
+                actobj.put(activity, summary);
+            }
+        }
+        return actobj;
+    }
+
+
+    // utility function that gets the basal metabolic rate averaged over a week
+    private float getBasalAVG(long _et) throws Exception {
+        float basalAVG = 0;
+        Calendar cal = java.util.Calendar.getInstance();
+        cal.setTime(new Date(_et));
+        //set start time to a week before end time
+        cal.add(Calendar.WEEK_OF_YEAR, -1);
+        long nst = cal.getTimeInMillis();
+
+        DataReadRequest.Builder builder = new DataReadRequest.Builder();
+        builder.aggregate(DataType.TYPE_BASAL_METABOLIC_RATE, DataType.AGGREGATE_BASAL_METABOLIC_RATE_SUMMARY);
+        builder.bucketByTime(1, TimeUnit.DAYS);
+        builder.setTimeRange(nst, _et, TimeUnit.MILLISECONDS);
+        DataReadRequest readRequest = builder.build();
+
+        DataReadResult dataReadResult = Fitness.HistoryApi.readData(mClient, readRequest).await();
+
+        if (dataReadResult.getStatus().isSuccess()) {
+            JSONObject obj = new JSONObject();
+            int avgsN = 0;
+            for (Bucket bucket : dataReadResult.getBuckets()) {
+                // in the com.google.bmr.summary data type, each data point represents
+                // the average, maximum and minimum basal metabolic rate, in kcal per day, over the time interval of the data point.
+                DataSet ds = bucket.getDataSet(DataType.AGGREGATE_BASAL_METABOLIC_RATE_SUMMARY);
+                for (DataPoint dp : ds.getDataPoints()) {
+                    float avg = dp.getValue(Field.FIELD_AVERAGE).asFloat();
+                    basalAVG += avg;
+                    avgsN++;
+                }
+            }
+            // do the average of the averages
+            if (avgsN != 0) basalAVG /= avgsN; // this a daily average
+            return basalAVG;
+        } else throw new Exception(dataReadResult.getStatus().getStatusMessage());
+    }
+
+    // stores a data point
+    private void store(final JSONArray args, final CallbackContext callbackContext) throws JSONException {
+        if (!args.getJSONObject(0).has("startDate")) {
+            callbackContext.error("Missing argument startDate");
+            return;
+        }
+        long st = args.getJSONObject(0).getLong("startDate");
+        if (!args.getJSONObject(0).has("endDate")) {
+            callbackContext.error("Missing argument endDate");
+            return;
+        }
+        long et = args.getJSONObject(0).getLong("endDate");
+        if (!args.getJSONObject(0).has("dataType")) {
+            callbackContext.error("Missing argument dataType");
+            return;
+        }
+        String datatype = args.getJSONObject(0).getString("dataType");
+        if (!args.getJSONObject(0).has("value")) {
+            callbackContext.error("Missing argument value");
+            return;
+        }
+        if (!args.getJSONObject(0).has("sourceName")) {
+            callbackContext.error("Missing argument sourceName");
+            return;
+        }
+        String sourceName = args.getJSONObject(0).getString("sourceName");
+
+        String sourceBundleId = cordova.getActivity().getApplicationContext().getPackageName();
+        if (args.getJSONObject(0).has("sourceBundleId")) {
+            sourceBundleId = args.getJSONObject(0).getString("sourceBundleId");
+        }
+
+        DataType dt = null;
+        if (bodydatatypes.get(datatype) != null)
+            dt = bodydatatypes.get(datatype);
+        if (activitydatatypes.get(datatype) != null)
+            dt = activitydatatypes.get(datatype);
+        if (locationdatatypes.get(datatype) != null)
+            dt = locationdatatypes.get(datatype);
+        if (nutritiondatatypes.get(datatype) != null)
+            dt = nutritiondatatypes.get(datatype);
+        if (customdatatypes.get(datatype) != null)
+            dt = customdatatypes.get(datatype);
+        if (healthdatatypes.get(datatype) != null)
+            dt = healthdatatypes.get(datatype);
+        if (dt == null) {
+            callbackContext.error("Datatype " + datatype + " not supported");
+            return;
+        }
+
+        if ((mClient == null) || (!mClient.isConnected())) {
+            if (!lightConnect()) {
+                callbackContext.error("Cannot connect to Google Fit");
+                return;
+            }
+        }
+
+        DataSource datasrc = new DataSource.Builder()
+                .setAppPackageName(sourceBundleId)
+                .setName(sourceName)
+                .setDataType(dt)
+                .setType(DataSource.TYPE_RAW)
+                .build();
+
+        DataSet dataSet = DataSet.create(datasrc);
+        DataPoint datapoint = DataPoint.create(datasrc);
+        datapoint.setTimeInterval(st, et, TimeUnit.MILLISECONDS);
+        if (dt.equals(DataType.TYPE_STEP_COUNT_DELTA)) {
+            String value = args.getJSONObject(0).getString("value");
+            int steps = Integer.parseInt(value);
+            datapoint.getValue(Field.FIELD_STEPS).setInt(steps);
+        } else if (dt.equals(DataType.TYPE_DISTANCE_DELTA)) {
+            String value = args.getJSONObject(0).getString("value");
+            float dist = Float.parseFloat(value);
+            datapoint.getValue(Field.FIELD_DISTANCE).setFloat(dist);
+        } else if (dt.equals(DataType.TYPE_CALORIES_EXPENDED)) {
+            String value = args.getJSONObject(0).getString("value");
+            float cals = Float.parseFloat(value);
+            datapoint.getValue(Field.FIELD_CALORIES).setFloat(cals);
+        } else if (dt.equals(DataType.TYPE_HEIGHT)) {
+            String value = args.getJSONObject(0).getString("value");
+            float height = Float.parseFloat(value);
+            datapoint.getValue(Field.FIELD_HEIGHT).setFloat(height);
+        } else if (dt.equals(DataType.TYPE_WEIGHT)) {
+            String value = args.getJSONObject(0).getString("value");
+            float weight = Float.parseFloat(value);
+            datapoint.getValue(Field.FIELD_WEIGHT).setFloat(weight);
+        } else if (dt.equals(DataType.TYPE_HEART_RATE_BPM)) {
+            String value = args.getJSONObject(0).getString("value");
+            float hr = Float.parseFloat(value);
+            datapoint.getValue(Field.FIELD_BPM).setFloat(hr);
+        } else if (dt.equals(DataType.TYPE_BODY_FAT_PERCENTAGE)) {
+            String value = args.getJSONObject(0).getString("value");
+            float perc = Float.parseFloat(value);
+            datapoint.getValue(Field.FIELD_PERCENTAGE).setFloat(perc);
+        } else if (dt.equals(DataType.TYPE_ACTIVITY_SEGMENT)) {
+            String value = args.getJSONObject(0).getString("value");
+            datapoint.getValue(Field.FIELD_ACTIVITY).setActivity(value);
+        } else if (dt.equals(DataType.TYPE_NUTRITION)) {
+            if (datatype.startsWith("nutrition.")) {
+                //it's a single nutrient
+                NutrientFieldInfo nuf = nutrientFields.get(datatype);
+                float nuv = (float) args.getJSONObject(0).getDouble("value");
+                datapoint.getValue(Field.FIELD_NUTRIENTS).setKeyValue(nuf.field, nuv);
+            } else {
+                // it's a nutrition object
+                JSONObject nutrobj = args.getJSONObject(0).getJSONObject("value");
+                String mealtype = nutrobj.getString("meal_type");
+                if (mealtype != null && !mealtype.isEmpty()) {
+                    if (mealtype.equalsIgnoreCase("breakfast"))
+                        datapoint.getValue(Field.FIELD_MEAL_TYPE).setInt(Field.MEAL_TYPE_BREAKFAST);
+                    else if (mealtype.equalsIgnoreCase("lunch"))
+                        datapoint.getValue(Field.FIELD_MEAL_TYPE).setInt(Field.MEAL_TYPE_LUNCH);
+                    else if (mealtype.equalsIgnoreCase("snack"))
+                        datapoint.getValue(Field.FIELD_MEAL_TYPE).setInt(Field.MEAL_TYPE_SNACK);
+                    else if (mealtype.equalsIgnoreCase("dinner"))
+                        datapoint.getValue(Field.FIELD_MEAL_TYPE).setInt(Field.MEAL_TYPE_DINNER);
+                    else datapoint.getValue(Field.FIELD_MEAL_TYPE).setInt(Field.MEAL_TYPE_UNKNOWN);
+                }
+                String item = nutrobj.getString("item");
+                if (item != null && !item.isEmpty()) {
+                    datapoint.getValue(Field.FIELD_FOOD_ITEM).setString(item);
+                }
+                JSONObject nutrientsobj = nutrobj.getJSONObject("nutrients");
+                if (nutrientsobj != null) {
+                    Iterator<String> nutrients = nutrientsobj.keys();
+                    while (nutrients.hasNext()) {
+                        String nutrientname = nutrients.next();
+                        NutrientFieldInfo nuf = nutrientFields.get(nutrientname);
+                        if (nuf != null) {
+                            float nuv = (float) nutrientsobj.getDouble(nutrientname);
+                            datapoint.getValue(Field.FIELD_NUTRIENTS).setKeyValue(nuf.field, nuv);
+                        }
+                    }
+                }
+            }
+        } else if (dt.equals(customdatatypes.get("gender"))) {
+            String value = args.getJSONObject(0).getString("value");
+            for (Field f : customdatatypes.get("gender").getFields()) {
+                //we expect only one field named gender
+                datapoint.getValue(f).setString(value);
+            }
+        } else if (dt.equals(customdatatypes.get("date_of_birth"))) {
+            JSONObject dob = args.getJSONObject(0).getJSONObject("value");
+            int year = dob.getInt("year");
+            int month = dob.getInt("month");
+            int day = dob.getInt("day");
+
+            for (Field f : customdatatypes.get("date_of_birth").getFields()) {
+                if (f.getName().equalsIgnoreCase("day"))
+                    datapoint.getValue(f).setInt(day);
+                if (f.getName().equalsIgnoreCase("month"))
+                    datapoint.getValue(f).setInt(month);
+                if (f.getName().equalsIgnoreCase("year"))
+                    datapoint.getValue(f).setInt(year);
+            }
+        } else if (dt.equals(HealthDataTypes.TYPE_BLOOD_GLUCOSE)) {
+            JSONObject glucoseobj = args.getJSONObject(0).getJSONObject("value");
+            float glucose = (float) glucoseobj.getDouble("glucose");
+            datapoint.getValue(HealthFields.FIELD_BLOOD_GLUCOSE_LEVEL).setFloat(glucose);
+
+            if (glucoseobj.has("meal")) {
+                String meal = glucoseobj.getString("meal");
+                int mealType = Field.MEAL_TYPE_UNKNOWN;
+                int relationToMeal = HealthFields.FIELD_TEMPORAL_RELATION_TO_MEAL_GENERAL;
+                if (meal.equalsIgnoreCase("fasting")) {
+                    mealType = Field.MEAL_TYPE_UNKNOWN;
+                    relationToMeal = HealthFields.FIELD_TEMPORAL_RELATION_TO_MEAL_FASTING;
+                } else {
+                    if (meal.startsWith("before_")) {
+                        relationToMeal = HealthFields.FIELD_TEMPORAL_RELATION_TO_MEAL_BEFORE_MEAL;
+                        meal = meal.substring("before_".length());
+                    } else if (meal.startsWith("after_")) {
+                        relationToMeal = HealthFields.FIELD_TEMPORAL_RELATION_TO_MEAL_AFTER_MEAL;
+                        meal = meal.substring("after_".length());
+                    }
+                    if (meal.equalsIgnoreCase("dinner")) {
+                        mealType = Field.MEAL_TYPE_DINNER;
+                    } else if (meal.equalsIgnoreCase("lunch")) {
+                        mealType = Field.MEAL_TYPE_LUNCH;
+                    } else if (meal.equalsIgnoreCase("snack")) {
+                        mealType = Field.MEAL_TYPE_SNACK;
+                    } else if (meal.equalsIgnoreCase("breakfast")) {
+                        mealType = Field.MEAL_TYPE_BREAKFAST;
+                    }
+                }
+                datapoint.getValue(HealthFields.FIELD_TEMPORAL_RELATION_TO_MEAL).setInt(relationToMeal);
+                datapoint.getValue(Field.FIELD_MEAL_TYPE).setInt(mealType);
             }
 
-            dispatch_sync(dispatch_get_main_queue(), ^{
-                CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsArray:finalResults];
-                [bSelf.commandDelegate sendPluginResult:result callbackId:command.callbackId];
-            });
+            if (glucoseobj.has("sleep")) {
+                String sleep = glucoseobj.getString("sleep");
+                int relationToSleep = HealthFields.TEMPORAL_RELATION_TO_SLEEP_FULLY_AWAKE;
+                if (sleep.equalsIgnoreCase("before_sleep")) {
+                    relationToSleep = HealthFields.TEMPORAL_RELATION_TO_SLEEP_BEFORE_SLEEP;
+                } else if (sleep.equalsIgnoreCase("on_waking")) {
+                    relationToSleep = HealthFields.TEMPORAL_RELATION_TO_SLEEP_ON_WAKING;
+                } else if (sleep.equalsIgnoreCase("during_sleep")) {
+                    relationToSleep = HealthFields.TEMPORAL_RELATION_TO_SLEEP_DURING_SLEEP;
+                }
+                datapoint.getValue(HealthFields.FIELD_TEMPORAL_RELATION_TO_SLEEP).setInt(relationToSleep);
+            }
+
+            if (glucoseobj.has("source")) {
+                String source = glucoseobj.getString("source");
+                int specimenSource = HealthFields.BLOOD_GLUCOSE_SPECIMEN_SOURCE_CAPILLARY_BLOOD;
+                if (source.equalsIgnoreCase("interstitial_fluid")) {
+                    specimenSource = HealthFields.BLOOD_GLUCOSE_SPECIMEN_SOURCE_INTERSTITIAL_FLUID;
+                } else if (source.equalsIgnoreCase("plasma")) {
+                    specimenSource = HealthFields.BLOOD_GLUCOSE_SPECIMEN_SOURCE_PLASMA;
+                } else if (source.equalsIgnoreCase("serum")) {
+                    specimenSource = HealthFields.BLOOD_GLUCOSE_SPECIMEN_SOURCE_SERUM;
+                } else if (source.equalsIgnoreCase("tears")) {
+                    specimenSource = HealthFields.BLOOD_GLUCOSE_SPECIMEN_SOURCE_TEARS;
+                } else if (source.equalsIgnoreCase("whole_blood")) {
+                    specimenSource = HealthFields.BLOOD_GLUCOSE_SPECIMEN_SOURCE_WHOLE_BLOOD;
+                }
+                datapoint.getValue(HealthFields.FIELD_BLOOD_GLUCOSE_SPECIMEN_SOURCE).setInt(specimenSource);
+            }
+        } else if (dt == HealthDataTypes.TYPE_BLOOD_PRESSURE) {
+            JSONObject bpobj = args.getJSONObject(0).getJSONObject("value");
+            if (bpobj.has("systolic")) {
+                float systolic = (float) bpobj.getDouble("systolic");
+                datapoint.getValue(HealthFields.FIELD_BLOOD_PRESSURE_SYSTOLIC).setFloat(systolic);
+            }
+            if (bpobj.has("diastolic")) {
+                float diastolic = (float) bpobj.getDouble("diastolic");
+                datapoint.getValue(HealthFields.FIELD_BLOOD_PRESSURE_DIASTOLIC).setFloat(diastolic);
+            }
         }
-    }];
-    [[HealthKit sharedHealthStore] executeQuery:query];
-}
+        dataSet.add(datapoint);
 
-/**
- * Save sample data
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)saveSample:(CDVInvokedUrlCommand *)command {
-    NSDictionary *args = command.arguments[0];
+        Status insertStatus = Fitness.HistoryApi.insertData(mClient, dataSet)
+                .await(1, TimeUnit.MINUTES);
 
-    //Use helper method to create quantity sample
-    NSError *error = nil;
-    HKSample *sample = [self loadHKSampleFromInputDictionary:args error:&error];
-
-    //If error in creation, return plugin result
-    if (error) {
-        [HealthKit triggerErrorCallbackWithMessage:error.localizedDescription command:command delegate:self.commandDelegate];
-        return;
+        if (!insertStatus.isSuccess()) {
+            callbackContext.error(insertStatus.getStatusMessage());
+        } else {
+            callbackContext.success();
+        }
     }
 
-    //Otherwise save to health store
-    [[HealthKit sharedHealthStore] saveObject:sample withCompletion:^(BOOL success, NSError *innerError) {
-        __block HealthKit *bSelf = self;
-        if (success) {
-            dispatch_sync(dispatch_get_main_queue(), ^{
-                CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
-                [bSelf.commandDelegate sendPluginResult:result callbackId:command.callbackId];
-            });
-        } else {
-            dispatch_sync(dispatch_get_main_queue(), ^{
-                [HealthKit triggerErrorCallbackWithMessage:innerError.localizedDescription command:command delegate:bSelf.commandDelegate];
-            });
+    // deletes data points in a given time window
+    private void delete(final JSONArray args, final CallbackContext callbackContext) throws JSONException {
+        if (!args.getJSONObject(0).has("startDate")) {
+            callbackContext.error("Missing argument startDate");
+            return;
         }
-    }];
+        final long st = args.getJSONObject(0).getLong("startDate");
+        if (!args.getJSONObject(0).has("endDate")) {
+            callbackContext.error("Missing argument endDate");
+            return;
+        }
+        final long et = args.getJSONObject(0).getLong("endDate");
+        if (!args.getJSONObject(0).has("dataType")) {
+            callbackContext.error("Missing argument dataType");
+            return;
+        }
+        final String datatype = args.getJSONObject(0).getString("dataType");
 
-}
+        DataType dt = null;
+        if (bodydatatypes.get(datatype) != null)
+            dt = bodydatatypes.get(datatype);
+        if (activitydatatypes.get(datatype) != null)
+            dt = activitydatatypes.get(datatype);
+        if (locationdatatypes.get(datatype) != null)
+            dt = locationdatatypes.get(datatype);
+        if (nutritiondatatypes.get(datatype) != null)
+            dt = nutritiondatatypes.get(datatype);
+        if (customdatatypes.get(datatype) != null)
+            dt = customdatatypes.get(datatype);
+        if (healthdatatypes.get(datatype) != null)
+            dt = healthdatatypes.get(datatype);
+        if (dt == null) {
+            callbackContext.error("Datatype " + datatype + " not supported");
+            return;
+        }
 
-/**
- * Save correlation data
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)saveCorrelation:(CDVInvokedUrlCommand *)command {
-    NSDictionary *args = command.arguments[0];
-    NSError *error = nil;
+        if ((mClient == null) || (!mClient.isConnected())) {
+            if (!lightConnect()) {
+                callbackContext.error("Cannot connect to Google Fit");
+                return;
+            }
+        }
 
-    //Use helper method to create correlation
-    HKCorrelation *correlation = [self loadHKCorrelationFromInputDictionary:args error:&error];
+        DataDeleteRequest request = new DataDeleteRequest.Builder()
+                .setTimeInterval(st, et, TimeUnit.MILLISECONDS)
+                .addDataType(dt)
+                .build();
 
-    //If error in creation, return plugin result
-    if (error) {
-        [HealthKit triggerErrorCallbackWithMessage:error.localizedDescription command:command delegate:self.commandDelegate];
-        return;
+        Fitness.HistoryApi.deleteData(mClient, request)
+                .setResultCallback(new ResultCallback<Status>() {
+                    @Override
+                    public void onResult(Status status) {
+                        if (status.isSuccess()) {
+                            callbackContext.success();
+                        } else {
+                            Log.e(TAG, "Cannot delete samples of " + datatype + ", status code "
+                                    + status.getStatusCode() + ", message " + status.getStatusMessage());
+                            callbackContext.error(status.getStatusMessage());
+                        }
+                    }
+                });
     }
-
-    //Otherwise save to health store
-    [[HealthKit sharedHealthStore] saveObject:correlation withCompletion:^(BOOL success, NSError *saveError) {
-        __block HealthKit *bSelf = self;
-        if (success) {
-            dispatch_sync(dispatch_get_main_queue(), ^{
-                CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
-                [bSelf.commandDelegate sendPluginResult:result callbackId:command.callbackId];
-            });
-        } else {
-            dispatch_sync(dispatch_get_main_queue(), ^{
-                [HealthKit triggerErrorCallbackWithMessage:saveError.localizedDescription command:command delegate:bSelf.commandDelegate];
-            });
-        }
-    }];
 }
-
-/**
- * Delete matching samples from the HealthKit store.
- * See https://developer.apple.com/library/ios/documentation/HealthKit/Reference/HKHealthStore_Class/#//apple_ref/occ/instm/HKHealthStore/deleteObject:withCompletion:
- *
- * @param command *CDVInvokedUrlCommand
- */
-- (void)deleteSamples:(CDVInvokedUrlCommand *)command {
-  NSDictionary *args = command.arguments[0];
-  NSDate *startDate = [NSDate dateWithTimeIntervalSince1970:[args[HKPluginKeyStartDate] longValue]];
-  NSDate *endDate = [NSDate dateWithTimeIntervalSince1970:[args[HKPluginKeyEndDate] longValue]];
-  NSString *sampleTypeString = args[HKPluginKeySampleType];
-
-  HKSampleType *type = [HealthKit getHKSampleType:sampleTypeString];
-  if (type == nil) {
-    [HealthKit triggerErrorCallbackWithMessage:@"sampleType is invalid" command:command delegate:self.commandDelegate];
-    return;
-  }
-
-  NSPredicate *predicate = [HKQuery predicateForSamplesWithStartDate:startDate endDate:endDate options:HKQueryOptionStrictStartDate];
-
-  NSSet *requestTypes = [NSSet setWithObjects:type, nil];
-  [[HealthKit sharedHealthStore] requestAuthorizationToShareTypes:nil readTypes:requestTypes completion:^(BOOL success, NSError *error) {
-    __block HealthKit *bSelf = self;
-    if (success) {
-      [[HealthKit sharedHealthStore] deleteObjectsOfType:type predicate:predicate withCompletion:^(BOOL success, NSUInteger deletedObjectCount, NSError * _Nullable deletionError) {
-        if (deletionError != nil) {
-          dispatch_sync(dispatch_get_main_queue(), ^{
-            [HealthKit triggerErrorCallbackWithMessage:deletionError.localizedDescription command:command delegate:bSelf.commandDelegate];
-          });
-        } else {
-          dispatch_sync(dispatch_get_main_queue(), ^{
-            CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsInt:(int)deletedObjectCount];
-            [self.commandDelegate sendPluginResult:result callbackId:command.callbackId];
-          });
-        }
-      }];
-    }
-  }];
-}
-
-@end
-
-#pragma clang diagnostic pop
