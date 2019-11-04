@@ -79,6 +79,7 @@ public class HealthPlugin extends CordovaPlugin {
     private static final int REQUEST_OAUTH = 1;
     private static final int REQUEST_DYN_PERMS = 2;
     private static final int READ_PERMS = 1;
+    private static final int READ_WRITE_PERMS = 2;
 
     // Scope for read/write access to activity-related data types in Google Fit.
     // These include activity type, calories consumed and expended, step counts, and others.
@@ -523,11 +524,25 @@ public class HealthPlugin extends CordovaPlugin {
                 bloodpressurescope = READ_PERMS;
         }
 
+        for (String readWriteType : readWriteTypes) {
+            if (bodydatatypes.get(readWriteType) != null)
+                bodyscope = READ_WRITE_PERMS;
+            if (activitydatatypes.get(readWriteType) != null)
+                activityscope = READ_WRITE_PERMS;
+            if (locationdatatypes.get(readWriteType) != null)
+                locationscope = READ_WRITE_PERMS;
+            if (nutritiondatatypes.get(readWriteType) != null)
+                nutritionscope = READ_WRITE_PERMS;
+            if (healthdatatypes.get(readWriteType) == HealthDataTypes.TYPE_BLOOD_GLUCOSE)
+                bloodgucosescope = READ_WRITE_PERMS;
+            if (healthdatatypes.get(readWriteType) == HealthDataTypes.TYPE_BLOOD_PRESSURE)
+                bloodpressurescope = READ_WRITE_PERMS;
+        }
 
         dynPerms.clear();
-        if (locationscope == READ_PERMS || activityscope == READ_PERMS) //activity requires access to location to report distace
+        if (locationscope == READ_PERMS || locationscope == READ_WRITE_PERMS || activityscope == READ_PERMS || activityscope == READ_WRITE_PERMS) //activity requires access to location to report distace
             dynPerms.add(Manifest.permission.ACCESS_FINE_LOCATION);
-        if (bodyscope == READ_PERMS)
+        if (bodyscope == READ_PERMS || bodyscope == READ_WRITE_PERMS)
             dynPerms.add(Manifest.permission.BODY_SENSORS);
 
         GoogleApiClient.Builder builder = new GoogleApiClient.Builder(this.cordova.getActivity());
@@ -537,24 +552,34 @@ public class HealthPlugin extends CordovaPlugin {
         // scopes: https://developers.google.com/android/reference/com/google/android/gms/common/Scopes.html
         if (bodyscope == READ_PERMS) {
             builder.addScope(new Scope(Scopes.FITNESS_BODY_READ));
-        } 
+        } else if (bodyscope == READ_WRITE_PERMS) {
+            builder.addScope(new Scope(Scopes.FITNESS_BODY_READ_WRITE));
+        }
         if (activityscope == READ_PERMS) {
             builder.addScope(new Scope(Scopes.FITNESS_ACTIVITY_READ));
-        } 
+        } else if (activityscope == READ_WRITE_PERMS) {
+            builder.addScope(new Scope(Scopes.FITNESS_ACTIVITY_READ_WRITE));
+        }
         if (locationscope == READ_WRITE_PERMS) { //specifially request read write permission for location.
             builder.addScope(new Scope(Scopes.FITNESS_LOCATION_READ_WRITE));
-        } else if (locationscope == READ_PERMS || activityscope == READ_PERMS) { // if read permission request for location or any read/write permissions for activities were requested then give read location
+        } else if (locationscope == READ_PERMS || activityscope == READ_PERMS || activityscope == READ_WRITE_PERMS) { // if read permission request for location or any read/write permissions for activities were requested then give read location
             builder.addScope(new Scope(Scopes.FITNESS_LOCATION_READ));
         }
         if (nutritionscope == READ_PERMS) {
             builder.addScope(new Scope(Scopes.FITNESS_NUTRITION_READ));
-        } 
+        } else if (nutritionscope == READ_WRITE_PERMS) {
+            builder.addScope(new Scope(Scopes.FITNESS_NUTRITION_READ_WRITE));
+        }
         if (bloodgucosescope == READ_PERMS) {
             builder.addScope(new Scope(Scopes.FITNESS_BLOOD_GLUCOSE_READ));
-        } 
+        } else if (bloodgucosescope == READ_WRITE_PERMS) {
+            builder.addScope(new Scope(Scopes.FITNESS_BLOOD_GLUCOSE_READ_WRITE));
+        }
         if (bloodpressurescope == READ_PERMS) {
             builder.addScope(new Scope(Scopes.FITNESS_BLOOD_PRESSURE_READ));
-        } 
+        } else if (bloodpressurescope == READ_WRITE_PERMS) {
+            builder.addScope(new Scope(Scopes.FITNESS_BLOOD_PRESSURE_READ_WRITE));
+        }
 
         builder.addConnectionCallbacks(new GoogleApiClient.ConnectionCallbacks() {
 
