@@ -571,6 +571,21 @@ static NSString *const HKPluginKeyUUID = @"UUID";
             [readDataTypes addObject:type];
         }
     }
+  
+    [[HealthKit sharedHealthStore] readTypes:readDataTypes completion:^(BOOL success, NSError *error) {
+        if (success) {
+            dispatch_sync(dispatch_get_main_queue(), ^{
+                CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
+                [self.commandDelegate sendPluginResult:result callbackId:command.callbackId];
+            });
+        } else {
+            dispatch_sync(dispatch_get_main_queue(), ^{
+                CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:error.localizedDescription];
+                [self.commandDelegate sendPluginResult:result callbackId:command.callbackId];
+            });
+        }
+    }];
+}
 
 /**
  * Check the authorization status for a specified permission
