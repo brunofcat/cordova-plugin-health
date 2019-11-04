@@ -574,7 +574,8 @@ static NSString *const HKPluginKeyUUID = @"UUID";
     }
 
     // write types
-    NSArray<NSString *> *writeTypes = args[HKPluginKeyWriteTypes];
+    //NSArray<NSString *> *writeTypes = args[HKPluginKeyWriteTypes];
+    NSArray<NSString *> *writeTypes = args[];
     NSMutableSet *writeDataTypes = [[NSMutableSet alloc] init];
 
     for (NSString *elem in writeTypes) {
