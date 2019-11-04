@@ -525,9 +525,9 @@ public class HealthPlugin extends CordovaPlugin {
 
 
         dynPerms.clear();
-        if (locationscope == READ_PERMS || locationscope == READ_WRITE_PERMS || activityscope == READ_PERMS || activityscope == READ_WRITE_PERMS) //activity requires access to location to report distace
+        if (locationscope == READ_PERMS || activityscope == READ_PERMS) //activity requires access to location to report distace
             dynPerms.add(Manifest.permission.ACCESS_FINE_LOCATION);
-        if (bodyscope == READ_PERMS || bodyscope == READ_WRITE_PERMS)
+        if (bodyscope == READ_PERMS)
             dynPerms.add(Manifest.permission.BODY_SENSORS);
 
         GoogleApiClient.Builder builder = new GoogleApiClient.Builder(this.cordova.getActivity());
