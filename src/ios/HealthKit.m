@@ -9,6 +9,7 @@
 #pragma mark Property Type Constants
 static NSString *const HKPluginError = @"HKPluginError";
 static NSString *const HKPluginKeyReadTypes = @"readTypes";
+static NSString *const HKPluginKeyWriteTypes = @"writeTypes";
 static NSString *const HKPluginKeyType = @"type";
 static NSString *const HKPluginKeyStartDate = @"startDate";
 static NSString *const HKPluginKeyEndDate = @"endDate";
@@ -396,9 +397,9 @@ static NSString *const HKPluginKeyUUID = @"UUID";
       return nil;
     }
     NSNumber* value = [self getCategoryValueByName:categoryString type:type];
-    if (value == nil) {
-      *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"%@,%@,%@",@"category value is not compatible with category",type.identifier,categoryString]}];
-      return nil;
+    if (value == nil && ![type.identifier isEqualToString:@"HKCategoryTypeIdentifierMindfulSession"]) {
+        *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"%@,%@,%@",@"category value is not compatible with category",type.identifier,categoryString]}];
+        return nil;
     }
 
     return [HKCategorySample categorySampleWithType:type value:[value integerValue] startDate:startDate endDate:endDate];
@@ -571,7 +572,7 @@ static NSString *const HKPluginKeyUUID = @"UUID";
             [readDataTypes addObject:type];
         }
     }
-  
+
     [[HealthKit sharedHealthStore] readTypes:readDataTypes completion:^(BOOL success, NSError *error) {
         if (success) {
             dispatch_sync(dispatch_get_main_queue(), ^{
@@ -862,6 +863,8 @@ static NSString *const HKPluginKeyUUID = @"UUID";
         }
     }];
 }
+
+
 
 /**
  * Save height data
