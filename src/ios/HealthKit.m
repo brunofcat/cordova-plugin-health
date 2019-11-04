@@ -573,7 +573,33 @@ static NSString *const HKPluginKeyUUID = @"UUID";
         }
     }
 
-    [[HealthKit sharedHealthStore] readTypes:readDataTypes completion:^(BOOL success, NSError *error) {
+    // write types
+    NSArray<NSString *> *writeTypes = args[];
+    NSMutableSet *writeDataTypes = [[NSMutableSet alloc] init];
+
+    for (NSString *elem in writeTypes) {
+#ifdef HKPLUGIN_DEBUG
+        NSLog(@"Requesting write permission for %@", elem);
+#endif
+        HKObjectType *type = nil;
+
+        if ([elem isEqual:@"HKWorkoutTypeIdentifier"]) {
+            type = [HKObjectType workoutType];
+        } else {
+            type = [HealthKit getHKObjectType:elem];
+        }
+
+        if (type == nil) {
+            CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"writeTypes contains an invalid value"];
+            [result setKeepCallbackAsBool:YES];
+            [self.commandDelegate sendPluginResult:result callbackId:command.callbackId];
+            // not returning deliberately to be future proof; other permissions are still asked
+        } else {
+            [writeDataTypes addObject:type];
+        }
+    }
+
+    [[HealthKit sharedHealthStore] requestAuthorizationToShareTypes:writeDataTypes readTypes:readDataTypes completion:^(BOOL success, NSError *error) {
         if (success) {
             dispatch_sync(dispatch_get_main_queue(), ^{
                 CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
@@ -864,7 +890,60 @@ static NSString *const HKPluginKeyUUID = @"UUID";
     }];
 }
 
+/**
+ * Read weight data
+ *
+ * @param command *CDVInvokedUrlCommand
+ */
+- (void)readWeight:(CDVInvokedUrlCommand *)command {
+    NSDictionary *args = command.arguments[0];
+    NSString *unit = args[HKPluginKeyUnit];
+    BOOL requestWritePermission = (args[@"requestWritePermission"] == nil || [args[@"requestWritePermission"] boolValue]);
 
+    HKUnit *preferredUnit = [HealthKit getUnit:unit expected:@"HKMassUnit"];
+    if (preferredUnit == nil) {
+        [HealthKit triggerErrorCallbackWithMessage:@"invalid unit is passed" command:command delegate:self.commandDelegate];
+        return;
+    }
+
+    // Query to get the user's latest weight, if it exists.
+    HKQuantityType *weightType = [HKQuantityType quantityTypeForIdentifier:HKQuantityTypeIdentifierBodyMass];
+    NSSet *requestTypes = [NSSet setWithObjects:weightType, nil];
+    // always ask for read and write permission if the app uses both, because granting read will remove write for the same type :(
+    [[HealthKit sharedHealthStore] requestAuthorizationToShareTypes:(requestWritePermission ? requestTypes : nil) readTypes:requestTypes completion:^(BOOL success, NSError *error) {
+        __block HealthKit *bSelf = self;
+        if (success) {
+            [[HealthKit sharedHealthStore] aapl_mostRecentQuantitySampleOfType:weightType predicate:nil completion:^(HKQuantity *mostRecentQuantity, NSDate *mostRecentDate, NSError *errorInner) {
+                if (mostRecentQuantity) {
+                    double usersWeight = [mostRecentQuantity doubleValueForUnit:preferredUnit];
+                    NSMutableDictionary *entry = [
+                            @{
+                                    HKPluginKeyValue: @(usersWeight),
+                                    HKPluginKeyUnit: unit,
+                                    @"date": [HealthKit stringFromDate:mostRecentDate]
+                            } mutableCopy
+                    ];
+
+                    //@TODO formerly dispatch_async
+                    dispatch_sync(dispatch_get_main_queue(), ^{
+                        CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:entry];
+                        [bSelf.commandDelegate sendPluginResult:result callbackId:command.callbackId];
+                    });
+                } else {
+                    //@TODO formerly dispatch_async
+                    dispatch_sync(dispatch_get_main_queue(), ^{
+                        NSString *errorDescription = ((errorInner.localizedDescription == nil) ? @"no data" : errorInner.localizedDescription);
+                        [HealthKit triggerErrorCallbackWithMessage:errorDescription command:command delegate:bSelf.commandDelegate];
+                    });
+                }
+            }];
+        } else {
+            dispatch_sync(dispatch_get_main_queue(), ^{
+                [HealthKit triggerErrorCallbackWithMessage:error.localizedDescription command:command delegate:bSelf.commandDelegate];
+            });
+        }
+    }];
+}
 
 /**
  * Save height data
@@ -905,6 +984,61 @@ static NSString *const HKPluginKeyUUID = @"UUID";
                 } else {
                     dispatch_sync(dispatch_get_main_queue(), ^{
                         [HealthKit triggerErrorCallbackWithMessage:innerError.localizedDescription command:command delegate:bSelf.commandDelegate];
+                    });
+                }
+            }];
+        } else {
+            dispatch_sync(dispatch_get_main_queue(), ^{
+                [HealthKit triggerErrorCallbackWithMessage:error.localizedDescription command:command delegate:bSelf.commandDelegate];
+            });
+        }
+    }];
+}
+
+/**
+ * Read height data
+ *
+ * @param command *CDVInvokedUrlCommand
+ */
+- (void)readHeight:(CDVInvokedUrlCommand *)command {
+    NSDictionary *args = command.arguments[0];
+    NSString *unit = args[HKPluginKeyUnit];
+    BOOL requestWritePermission = (args[@"requestWritePermission"] == nil || [args[@"requestWritePermission"] boolValue]);
+
+    HKUnit *preferredUnit = [HealthKit getUnit:unit expected:@"HKLengthUnit"];
+    if (preferredUnit == nil) {
+        [HealthKit triggerErrorCallbackWithMessage:@"invalid unit is passed" command:command delegate:self.commandDelegate];
+        return;
+    }
+
+    // Query to get the user's latest height, if it exists.
+    HKQuantityType *heightType = [HKQuantityType quantityTypeForIdentifier:HKQuantityTypeIdentifierHeight];
+    NSSet *requestTypes = [NSSet setWithObjects:heightType, nil];
+    // always ask for read and write permission if the app uses both, because granting read will remove write for the same type :(
+    [[HealthKit sharedHealthStore] requestAuthorizationToShareTypes:(requestWritePermission ? requestTypes : nil) readTypes:requestTypes completion:^(BOOL success, NSError *error) {
+        __block HealthKit *bSelf = self;
+        if (success) {
+            [[HealthKit sharedHealthStore] aapl_mostRecentQuantitySampleOfType:heightType predicate:nil completion:^(HKQuantity *mostRecentQuantity, NSDate *mostRecentDate, NSError *errorInner) { // TODO use
+                if (mostRecentQuantity) {
+                    double usersHeight = [mostRecentQuantity doubleValueForUnit:preferredUnit];
+                    NSMutableDictionary *entry = [
+                            @{
+                                    HKPluginKeyValue: @(usersHeight),
+                                    HKPluginKeyUnit: unit,
+                                    @"date": [HealthKit stringFromDate:mostRecentDate]
+                            } mutableCopy
+                    ];
+
+                    //@TODO formerly dispatch_async
+                    dispatch_sync(dispatch_get_main_queue(), ^{
+                        CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:entry];
+                        [bSelf.commandDelegate sendPluginResult:result callbackId:command.callbackId];
+                    });
+                } else {
+                    //@TODO formerly dispatch_async
+                    dispatch_sync(dispatch_get_main_queue(), ^{
+                        NSString *errorDescritption = ((errorInner.localizedDescription == nil) ? @"no data" : errorInner.localizedDescription);
+                        [HealthKit triggerErrorCallbackWithMessage:errorDescritption command:command delegate:bSelf.commandDelegate];
                     });
                 }
             }];
