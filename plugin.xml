@@ -79,7 +79,7 @@
   <!-- android -->
   <platform name="android">
         <framework src="com.google.android.gms:play-services-fitness:$FIT_API_VERSION" />
-    <preference name="FIT_API_VERSION" default="19.0.0"/>
+    <preference name="FIT_API_VERSION" default="16.0.1"/>
 
     
     <config-file target="AndroidManifest.xml" parent="/*">
