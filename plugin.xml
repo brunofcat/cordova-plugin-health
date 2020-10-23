@@ -50,10 +50,14 @@
 
     <!-- Usage description of Health, mandatory since iOS 10 -->
     <preference name="HEALTH_READ_PERMISSION" default=" " />
+    <preference name="HEALTH_WRITE_PERMISSION" default=" " />
     <config-file target="*-Info.plist" parent="NSHealthShareUsageDescription">
       <string>$HEALTH_READ_PERMISSION</string>
     </config-file>
-    
+    <config-file target="*-Info.plist" parent="NSHealthUpdateUsageDescription">
+      <string>$HEALTH_WRITE_PERMISSION</string>
+    </config-file>
+
     <config-file target="*/Entitlements-Debug.plist" parent="com.apple.developer.healthkit">
       <true/>
     </config-file>
@@ -75,15 +79,16 @@
   <!-- android -->
   <platform name="android">
     <framework src="com.google.android.gms:play-services-fitness:$GMS_VERSION" />
-    <preference name="GMS_VERSION" default="17.0.0"/>
+    <preference name="GMS_VERSION" default="16.0.1"/>
 
-    <!--
+    
     <config-file target="AndroidManifest.xml" parent="/*">
-      <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+      <!--<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
       <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-      <uses-permission android:name="android.permission.BODY_SENSORS" />
+      <uses-permission android:name="android.permission.BODY_SENSORS" />-->
+      <uses-permission android:name="android.gms.permission.ACTIVITY_RECOGNITION"/>
     </config-file>
-    -->
+    
 
     <config-file target="res/xml/config.xml" parent="/*">
       <feature name="health">
