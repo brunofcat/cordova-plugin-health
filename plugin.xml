@@ -78,7 +78,7 @@
 
   <!-- android -->
   <platform name="android">
-        framework src="com.google.android.gms:play-services-fitness:$FIT_API_VERSION" />
+        <framework src="com.google.android.gms:play-services-fitness:$FIT_API_VERSION" />
     <preference name="FIT_API_VERSION" default="16.0.1"/>
 
     <framework src="com.google.android.gms:play-services-auth:$PLAY_AUTH_VERSION" />
