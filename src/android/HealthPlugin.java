@@ -537,8 +537,14 @@ public class HealthPlugin extends CordovaPlugin {
             if (healthdatatypes.get(readWriteType) == HealthDataTypes.TYPE_BLOOD_PRESSURE)
                 bloodpressurescope = READ_WRITE_PERMS;
         }
-
+        
         dynPerms.clear();
+        
+        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.M) {
+            dynPerms.add(Manifest.permission.ACTIVITY_RECOGNITION);
+        }
+
+        
         if (locationscope == READ_PERMS || locationscope == READ_WRITE_PERMS || activityscope == READ_PERMS || activityscope == READ_WRITE_PERMS) //activity requires access to location to report distace
             dynPerms.add(Manifest.permission.ACCESS_FINE_LOCATION);
         if (bodyscope == READ_PERMS || bodyscope == READ_WRITE_PERMS)
