@@ -9,6 +9,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.support.annotation.NonNull;
 import android.util.Log;
+import android.os.Build;
 
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.GoogleApiAvailability;
@@ -537,6 +538,10 @@ public class HealthPlugin extends CordovaPlugin {
                 bloodgucosescope = READ_WRITE_PERMS;
             if (healthdatatypes.get(readWriteType) == HealthDataTypes.TYPE_BLOOD_PRESSURE)
                 bloodpressurescope = READ_WRITE_PERMS;
+        }
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            dynPerms.add(Manifest.permission.ACTIVITY_RECOGNITION);
         }
 
         dynPerms.clear();
