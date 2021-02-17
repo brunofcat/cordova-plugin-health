@@ -340,7 +340,7 @@ public class HealthPlugin extends CordovaPlugin {
         if (this.account != null) {
             Fitness.getConfigClient(this,  GoogleSignIn.getAccountForExtension(this, fitnessOptions))
                 .disableFit()
-                .addOnSuccessListener {
+                .addOnSuccessListener(r -> {
                 Log.i(TAG,"Disabled Google Fit")
             }
             .addOnFailureListener { e ->
