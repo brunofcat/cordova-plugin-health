@@ -342,12 +342,10 @@ public class HealthPlugin extends CordovaPlugin {
                 .disableFit()
                 .addOnSuccessListener(r -> {
                     callbackContext.success();
-                    Log.i(TAG,"Disabled Google Fit")
                 })
                 .addOnFailureListener(err -> {
                     err.getCause().printStackTrace();
                     callbackContext.error(err.getMessage());
-                    Log.w(TAG,"There was an error disabling Google Fit", e)
                 });
         }
     }
