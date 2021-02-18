@@ -341,11 +341,14 @@ public class HealthPlugin extends CordovaPlugin {
             Fitness.getConfigClient(this,  GoogleSignIn.getAccountForExtension(this, fitnessOptions))
                 .disableFit()
                 .addOnSuccessListener(r -> {
-                Log.i(TAG,"Disabled Google Fit")
-            }
-            .addOnFailureListener { e ->
-            Log.w(TAG,"There was an error disabling Google Fit", e)
-            }
+                    callbackContext.success();
+                    Log.i(TAG,"Disabled Google Fit")
+                })
+                .addOnFailureListener(err -> {
+                    err.getCause().printStackTrace();
+                    callbackContext.error(err.getMessage());
+                    Log.w(TAG,"There was an error disabling Google Fit", e)
+                });
         }
     }
 
