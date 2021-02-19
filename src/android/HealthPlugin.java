@@ -337,8 +337,22 @@ public class HealthPlugin extends CordovaPlugin {
      * @param callbackContext
      */
     private void disconnect(final CallbackContext callbackContext) {
+        Log.d(TAG, "Building read/write fitness options");
+        FitnessOptions.Builder builder = FitnessOptions.builder();
+        for (String readType : authReadTypes) {
+            builder.addDataType(datatypes.get(readType), FitnessOptions.ACCESS_READ);
+        }
+        for (String readWriteType : authReadWriteTypes) {
+            // read must be explicitly added if we want to read other apps data too
+            // see: https://developers.google.com/fit/improvements#what_do_you_need_to_do
+            builder.addDataType(datatypes.get(readWriteType), FitnessOptions.ACCESS_READ);
+            builder.addDataType(datatypes.get(readWriteType), FitnessOptions.ACCESS_WRITE);
+        }
+        
+        FitnessOptions options = builder.build();
+        
         if (this.account != null) {
-            Fitness.getConfigClient(this.cordova.getContext(),  GoogleSignIn.getAccountForExtension(this.account, fitnessOptions))
+            Fitness.getConfigClient(this.cordova.getContext(),  GoogleSignIn.getAccountForExtension(this.account, options))
                 .disableFit()
                 .addOnSuccessListener(r -> {
                     callbackContext.success();
