@@ -349,20 +349,6 @@ public class HealthPlugin extends CordovaPlugin {
                     });
         }
     }
-    
-    private void disconnect(final CallbackContext callbackContext) {
-        if (this.account != null) {
-            Fitness.getConfigClient(this.cordova.getContext(), this.account)
-                    .disableFit()
-                    .addOnSuccessListener(r -> {
-                        callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.OK, true));
-                    })
-                    .addOnFailureListener(err -> {
-                        err.getCause().printStackTrace();
-                        callbackContext.error("cannot disconnect," + err.getMessage());
-                    });
-        }
-    }
 
     // prompts to install GooglePlayServices if not available then Google Fit if not available
     private void promptInstall(final CallbackContext callbackContext) {
