@@ -342,12 +342,6 @@ public class HealthPlugin extends CordovaPlugin {
         for (String readType : authReadTypes) {
             builder.addDataType(datatypes.get(readType), FitnessOptions.ACCESS_READ);
         }
-        for (String readWriteType : authReadWriteTypes) {
-            // read must be explicitly added if we want to read other apps data too
-            // see: https://developers.google.com/fit/improvements#what_do_you_need_to_do
-            builder.addDataType(datatypes.get(readWriteType), FitnessOptions.ACCESS_READ);
-            builder.addDataType(datatypes.get(readWriteType), FitnessOptions.ACCESS_WRITE);
-        }
         
         FitnessOptions options = builder.build();
         
@@ -397,12 +391,7 @@ public class HealthPlugin extends CordovaPlugin {
         for (String readType : authReadTypes) {
             builder.addDataType(datatypes.get(readType), FitnessOptions.ACCESS_READ);
         }
-        for (String readWriteType : authReadWriteTypes) {
-            // read must be explicitly added if we want to read other apps data too
-            // see: https://developers.google.com/fit/improvements#what_do_you_need_to_do
-            builder.addDataType(datatypes.get(readWriteType), FitnessOptions.ACCESS_READ);
-            builder.addDataType(datatypes.get(readWriteType), FitnessOptions.ACCESS_WRITE);
-        }
+        
         FitnessOptions options = builder.build();
 
         Log.d(TAG, "Accessing account");
