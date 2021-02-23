@@ -337,16 +337,24 @@ public class HealthPlugin extends CordovaPlugin {
      * @param callbackContext
      */
     private void disconnect(final CallbackContext callbackContext) {
+        Log.d(TAG, "Building read/write fitness options");
+        FitnessOptions.Builder builder = FitnessOptions.builder();
+        for (String readType : authReadTypes) {
+            builder.addDataType(datatypes.get(readType), FitnessOptions.ACCESS_READ);
+        }
+        
+        FitnessOptions options = builder.build();
+        
         if (this.account != null) {
-            Fitness.getConfigClient(this.cordova.getContext(), this.account)
-                    .disableFit()
-                    .addOnSuccessListener(r -> {
-                        callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.OK, true));
-                    })
-                    .addOnFailureListener(err -> {
-                        err.getCause().printStackTrace();
-                        callbackContext.error("cannot disconnect," + err.getMessage());
-                    });
+            Fitness.getConfigClient(this.cordova.getContext(),  GoogleSignIn.getAccountForExtension(this.cordova.getContext(), options))
+                .disableFit()
+                .addOnSuccessListener(r -> {
+                    callbackContext.success();
+                })
+                .addOnFailureListener(err -> {
+                    err.getCause().printStackTrace();
+                    callbackContext.error(err.getMessage());
+                });
         }
     }
 
